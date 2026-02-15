@@ -2,6 +2,9 @@
 *.gen.*
 .godot/
 
+# Ignore cache files
+.cache/
+
 # Ignore library files but not the gdextension file
 project/bin/*
 !project/bin/android
