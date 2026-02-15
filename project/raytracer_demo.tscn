@@ -22,6 +22,9 @@ metallic_specular = 1.0
 script = ExtResource("1_es7oo")
 
 [node name="RayTracerBase" type="RayTracerBase" parent="." unique_id=814164258]
+debug_enabled = false
+debug_bvh_depth = 6
+backend = 1
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="RayTracerBase" unique_id=1929197600]
 mesh = SubResource("BoxMesh_s4m86")
@@ -38,3 +41,6 @@ surface_material_override/0 = SubResource("StandardMaterial3D_es7oo")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=664557483]
 transform = Transform3D(0.70710677, 0.29883623, -0.6408563, 0, 0.90630776, 0.42261827, 0.70710677, -0.29883623, 0.6408563, 0, 0, 0)
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=1999247024]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 2.9448776)
