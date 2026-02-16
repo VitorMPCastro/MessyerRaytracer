@@ -105,7 +105,7 @@ public:
 	// CPU path is automatically parallelized: the ray array is split across
 	// worker threads, each traversing the BVH independently.
 	void cast_rays(const Ray *rays, Intersection *results, int count,
-			RayStats *stats = nullptr) {
+			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) {
 		RT_ASSERT(count >= 0, "RayDispatcher::cast_rays: count must be non-negative");
 		RT_ASSERT(count == 0 || rays != nullptr, "RayDispatcher::cast_rays: rays is null");
 		RT_ASSERT(count == 0 || results != nullptr, "RayDispatcher::cast_rays: results is null");
@@ -118,10 +118,10 @@ public:
 				apply_ray_permutation(rays, perm, sorted_rays);
 
 				std::vector<Intersection> sorted_results(count);
-				gpu_caster_.cast_rays(sorted_rays.data(), sorted_results.data(), count);
+				gpu_caster_.cast_rays(sorted_rays.data(), sorted_results.data(), count, query_mask);
 				unshuffle_intersections(sorted_results.data(), perm, results);
 			} else {
-				gpu_caster_.cast_rays(rays, results, count);
+				gpu_caster_.cast_rays(rays, results, count, query_mask);
 			}
 			return;
 		}
@@ -131,7 +131,7 @@ public:
 			pool_.dispatch_and_wait(count, MIN_BATCH_FOR_THREADING,
 					[&](int start, int end) {
 						scene_.cast_rays_packet(&rays[start], &results[start],
-								end - start);
+								end - start, nullptr, query_mask);
 					});
 		} else {
 			// With stats — each chunk accumulates locally, merge after.
@@ -145,7 +145,7 @@ public:
 								std::memory_order_relaxed);
 						RayStats &local = chunk_stats[slot];
 						scene_.cast_rays_packet(&rays[start], &results[start],
-								end - start, &local);
+								end - start, &local, query_mask);
 					});
 
 			for (const auto &cs : chunk_stats) {
@@ -163,7 +163,7 @@ public:
 	//
 	// CPU path is automatically parallelized (same as cast_rays).
 	void any_hit_rays(const Ray *rays, bool *hit_results, int count,
-			RayStats *stats = nullptr) {
+			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) {
 		RT_ASSERT(count >= 0, "RayDispatcher::any_hit_rays: count must be non-negative");
 		RT_ASSERT(count == 0 || rays != nullptr, "RayDispatcher::any_hit_rays: rays is null");
 		RT_ASSERT(count == 0 || hit_results != nullptr, "RayDispatcher::any_hit_rays: hit_results is null");
@@ -177,11 +177,11 @@ public:
 				std::vector<bool> sorted_results(count);
 				// std::vector<bool> is bit-packed — need a plain array for data ptr.
 				bool *sorted_buf = new bool[count];
-				gpu_caster_.cast_rays_any_hit(sorted_rays.data(), sorted_buf, count);
+				gpu_caster_.cast_rays_any_hit(sorted_rays.data(), sorted_buf, count, query_mask);
 				unshuffle_bools(sorted_buf, perm, hit_results);
 				delete[] sorted_buf;
 			} else {
-				gpu_caster_.cast_rays_any_hit(rays, hit_results, count);
+				gpu_caster_.cast_rays_any_hit(rays, hit_results, count, query_mask);
 			}
 			return;
 		}
@@ -190,7 +190,7 @@ public:
 			pool_.dispatch_and_wait(count, MIN_BATCH_FOR_THREADING,
 					[&](int start, int end) {
 						for (int i = start; i < end; i++) {
-							hit_results[i] = scene_.any_hit(rays[i]);
+							hit_results[i] = scene_.any_hit(rays[i], nullptr, query_mask);
 						}
 					});
 		} else {
@@ -204,7 +204,7 @@ public:
 								std::memory_order_relaxed);
 						RayStats &local = chunk_stats[slot];
 						for (int i = start; i < end; i++) {
-							hit_results[i] = scene_.any_hit(rays[i], &local);
+							hit_results[i] = scene_.any_hit(rays[i], &local, query_mask);
 						}
 					});
 
@@ -218,24 +218,26 @@ public:
 	// Dispatch — single ray convenience
 	// ========================================================================
 
-	Intersection cast_ray(const Ray &ray, RayStats *stats = nullptr) {
+	Intersection cast_ray(const Ray &ray, RayStats *stats = nullptr,
+			uint32_t query_mask = 0xFFFFFFFF) {
 		RT_ASSERT_VALID_RAY(ray);
 		if (using_gpu()) {
 			Intersection result;
-			gpu_caster_.cast_rays(&ray, &result, 1);
+			gpu_caster_.cast_rays(&ray, &result, 1, query_mask);
 			return result;
 		}
-		return scene_.cast_ray(ray, stats);
+		return scene_.cast_ray(ray, stats, query_mask);
 	}
 
-	bool any_hit(const Ray &ray, RayStats *stats = nullptr) {
+	bool any_hit(const Ray &ray, RayStats *stats = nullptr,
+			uint32_t query_mask = 0xFFFFFFFF) {
 		RT_ASSERT_VALID_RAY(ray);
 		if (using_gpu()) {
 			bool result;
-			gpu_caster_.cast_rays_any_hit(&ray, &result, 1);
+			gpu_caster_.cast_rays_any_hit(&ray, &result, 1, query_mask);
 			return result;
 		}
-		return scene_.any_hit(ray, stats);
+		return scene_.any_hit(ray, stats, query_mask);
 	}
 
 	// ========================================================================

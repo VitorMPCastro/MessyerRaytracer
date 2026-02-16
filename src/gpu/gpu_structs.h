@@ -34,18 +34,19 @@ struct BVHNode;
 //
 // GLSL layout:
 //   struct GPUTriangle {
-//       vec3 v0;     uint id;      // offset  0–15
-//       vec3 edge1;  float _pad1;  // offset 16–31
-//       vec3 edge2;  float _pad2;  // offset 32–47
-//       vec3 normal; float _pad3;  // offset 48–63
+//       vec3 v0;     uint id;       // offset  0–15
+//       vec3 edge1;  uint layers;   // offset 16–31
+//       vec3 edge2;  float _pad2;   // offset 32–47
+//       vec3 normal; float _pad3;   // offset 48–63
 //   };
 //
 // The 'id' field replaces what would otherwise be dead padding after v0.
 // It stores the triangle's original ID so the GPU can report which primitive
 // was hit (matching the CPU path's behavior).
+// The 'layers' field stores the visibility layer bitmask for per-triangle filtering.
 struct GPUTrianglePacked {
 	float v0[3];     uint32_t id;
-	float edge1[3];  float _pad1;
+	float edge1[3];  uint32_t layers;
 	float edge2[3];  float _pad2;
 	float normal[3]; float _pad3;
 };
@@ -116,9 +117,10 @@ static_assert(sizeof(GPUIntersectionPacked) == 32, "GPUIntersectionPacked must b
 //
 // Vulkan push constants are the fastest way to pass small uniform data.
 // They live in GPU registers — no memory access needed.
-// We only need ray_count; the rest is padding for alignment.
+// We need ray_count and query_mask; the rest is padding for alignment.
 struct GPUPushConstants {
 	uint32_t ray_count;
-	uint32_t _pad[3];
+	uint32_t query_mask;
+	uint32_t _pad[2];
 };
 static_assert(sizeof(GPUPushConstants) == 16, "GPUPushConstants must be 16 bytes");

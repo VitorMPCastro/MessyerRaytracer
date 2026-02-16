@@ -4,9 +4,12 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/classes/engine.hpp>
 
-#include "example_class.h"
-#include "raytracer_base.h"
+#include "raytracer_server.h"
+#include "raytracer_probe.h"
+#include "raytracer_debug.h"
+#include "ray_batch.h"
 
 using namespace godot;
 
@@ -15,13 +18,24 @@ void initialize_gdextension_types(ModuleInitializationLevel p_level)
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-	GDREGISTER_CLASS(ExampleClass);
-	GDREGISTER_CLASS(RayTracerBase);
+	GDREGISTER_CLASS(RayTracerServer);
+	GDREGISTER_CLASS(RayTracerProbe);
+	GDREGISTER_CLASS(RayTracerDebug);
+	GDREGISTER_CLASS(RayBatch);
+
+	Engine::get_singleton()->register_singleton("RayTracerServer", memnew(RayTracerServer));
 }
 
 void uninitialize_gdextension_types(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
+	}
+
+	Engine *engine = Engine::get_singleton();
+	RayTracerServer *server = RayTracerServer::get_singleton();
+	if (engine && server) {
+		engine->unregister_singleton("RayTracerServer");
+		memdelete(server);
 	}
 }
 

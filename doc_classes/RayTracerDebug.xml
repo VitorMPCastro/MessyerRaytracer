@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="RayTracerDebug" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Debug visualization node that draws ray casts, surface normals, distance heatmaps, traversal cost heatmaps, and BVH wireframes.
+	</brief_description>
+	<description>
+		RayTracerDebug is a [Node3D] that provides 7 debug visualization modes for the custom ray tracing system. It queries [RayTracerServer] for ray dispatch and scene data, then draws results using [ImmediateMesh].
+		[b]Draw modes:[/b]
+		- [b]Rays[/b]: Green hit lines with yellow markers and cyan normals; red miss lines.
+		- [b]Normals[/b]: Color-coded by surface normal direction (RGB = XYZ).
+		- [b]Distance[/b]: White (close) to red (far) distance heatmap.
+		- [b]Heatmap[/b]: Cold-to-hot coloring by BVH traversal cost (triangle tests per ray).
+		- [b]Overheat[/b]: Same as Heatmap, but rays exceeding the budget turn magenta.
+		- [b]BVH[/b]: Draws BVH node bounding boxes as colored wireframes with faint ray lines.
+		- [b]Layers[/b]: Color-codes hits by visibility layer. Each of the 20 Godot render layers gets a unique hue, useful for verifying layer assignments.
+		[b]Usage:[/b]
+		[codeblock]
+		$Debug.debug_enabled = true
+		$Debug.debug_draw_mode = RayTracerDebug.DRAW_HEATMAP
+		$Debug.cast_debug_rays(cam.global_position, -cam.global_basis.z, 32, 24, 60.0)
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="cast_debug_rays">
+			<return type="void" />
+			<param index="0" name="origin" type="Vector3" />
+			<param index="1" name="forward" type="Vector3" />
+			<param index="2" name="grid_w" type="int" />
+			<param index="3" name="grid_h" type="int" />
+			<param index="4" name="fov_degrees" type="float" />
+			<description>
+				Cast a grid of [param grid_w] x [param grid_h] debug rays from [param origin] looking along [param forward] with the specified field-of-view in degrees. Draws the result according to the current [member debug_draw_mode].
+				Performance statistics are printed to the output console and stored for [method get_last_stats].
+			</description>
+		</method>
+		<method name="clear_debug">
+			<return type="void" />
+			<description>
+				Clear all drawn debug geometry.
+			</description>
+		</method>
+		<method name="get_last_stats">
+			<return type="Dictionary" />
+			<description>
+				Returns performance statistics from the last [method cast_debug_rays] call.
+			</description>
+		</method>
+		<method name="get_last_cast_ms">
+			<return type="float" />
+			<description>
+				Returns the wall-clock time of the most recent debug cast in milliseconds.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="debug_enabled" type="bool" setter="set_debug_enabled" getter="get_debug_enabled" default="true">
+			Master toggle for debug ray casting. When disabled, [method cast_debug_rays] is a no-op.
+		</member>
+		<member name="debug_draw_mode" type="int" setter="set_draw_mode" getter="get_draw_mode" enum="RayTracerDebug.DebugDrawMode" default="0">
+			The visualization mode used when drawing debug rays.
+		</member>
+		<member name="debug_ray_miss_length" type="float" setter="set_ray_miss_length" getter="get_ray_miss_length" default="20.0">
+			How far to draw miss rays (no hit) in world units.
+		</member>
+		<member name="debug_normal_length" type="float" setter="set_normal_length" getter="get_normal_length" default="0.3">
+			Length of the normal arrow drawn at hit points.
+		</member>
+		<member name="debug_heatmap_max_distance" type="float" setter="set_heatmap_max_distance" getter="get_heatmap_max_distance" default="50.0">
+			Maximum distance for the Distance heatmap color ramp.
+		</member>
+		<member name="debug_heatmap_max_cost" type="int" setter="set_heatmap_max_cost" getter="get_heatmap_max_cost" default="50">
+			Maximum triangle-test count for the Heatmap/Overheat cost ramp.
+		</member>
+		<member name="debug_bvh_depth" type="int" setter="set_bvh_depth" getter="get_bvh_depth" default="0">
+			Target BVH depth for wireframe drawing. -1 draws all leaf nodes.
+		</member>
+		<member name="debug_layer_mask" type="int" setter="set_layer_mask" getter="get_layer_mask" default="2147483647">
+			Visibility layer bitmask for debug ray casting. Only geometry whose layers overlap this mask will be tested. Shown as a 3D render layer checkbox in the inspector.
+		</member>
+	</members>
+	<constants>
+		<constant name="DRAW_RAYS" value="0" enum="DebugDrawMode">
+			Classic visualization: green hits, red misses, yellow markers, cyan normals.
+		</constant>
+		<constant name="DRAW_NORMALS" value="1" enum="DebugDrawMode">
+			Color rays by surface normal direction (RGB = XYZ mapped to 0..1).
+		</constant>
+		<constant name="DRAW_DISTANCE" value="2" enum="DebugDrawMode">
+			Distance heatmap: white (close) through yellow to dark red (far).
+		</constant>
+		<constant name="DRAW_HEATMAP" value="3" enum="DebugDrawMode">
+			Traversal cost heatmap: blue (cheap) through green/yellow to red (expensive).
+		</constant>
+		<constant name="DRAW_OVERHEAT" value="4" enum="DebugDrawMode">
+			Like Heatmap, but rays exceeding the cost budget turn magenta.
+		</constant>
+		<constant name="DRAW_BVH" value="5" enum="DebugDrawMode">
+			Draw BVH bounding box wireframes with faint ray lines.
+		</constant>
+		<constant name="DRAW_LAYERS" value="6" enum="DebugDrawMode">
+			Color-code hit rays by visibility layer. Each layer gets a unique hue so you can verify which geometry belongs to which layer.
+		</constant>
+	</constants>
+</class>

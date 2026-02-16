@@ -31,11 +31,16 @@ struct Triangle {
 	// Unique ID so we can identify which triangle was hit.
 	uint32_t id;
 
-	Triangle()
-		: v0(), v1(), v2(), edge1(), edge2(), normal(), id(0) {}
+	// Visibility layer bitmask (matches Godot's VisualInstance3D.layers).
+	// 0xFFFFFFFF = visible on all layers (default).
+	uint32_t layers;
 
-	Triangle(const Vector3 &a, const Vector3 &b, const Vector3 &c, uint32_t _id)
-		: v0(a), v1(b), v2(c), id(_id) {
+	Triangle()
+		: v0(), v1(), v2(), edge1(), edge2(), normal(), id(0), layers(0xFFFFFFFF) {}
+
+	Triangle(const Vector3 &a, const Vector3 &b, const Vector3 &c, uint32_t _id,
+			uint32_t _layers = 0xFFFFFFFF)
+		: v0(a), v1(b), v2(c), id(_id), layers(_layers) {
 		RT_ASSERT(a.is_finite() && b.is_finite() && c.is_finite(),
 			"Triangle vertices must be finite");
 		edge1 = v1 - v0;

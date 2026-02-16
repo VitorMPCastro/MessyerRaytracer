@@ -22,6 +22,10 @@
 #include <functional>
 #include <atomic>
 #include <cstdint>
+#include <exception>
+
+#include <godot_cpp/core/error_macros.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 class ThreadPool {
 public:
@@ -140,7 +144,13 @@ private:
 				if (start >= work_total_) break;
 				int end = std::min(start + work_chunk_size_, work_total_);
 
-				(*work_func_)(start, end);
+				try {
+					(*work_func_)(start, end);
+				} catch (const std::exception &e) {
+					ERR_PRINT(godot::String("ThreadPool worker exception: ") + e.what());
+				} catch (...) {
+					ERR_PRINT("ThreadPool worker: unknown exception");
+				}
 			}
 
 			// Signal completion

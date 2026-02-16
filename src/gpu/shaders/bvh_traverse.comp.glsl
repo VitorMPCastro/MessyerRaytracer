@@ -1,21 +1,3 @@
-#pragma once
-// bvh_traverse_comp.h — GLSL compute shader source for GPU BVH ray traversal.
-//
-// This file embeds the GLSL source as a C++ raw string literal. This avoids
-// the need for a file-loading system — the shader is compiled from source at
-// runtime using Godot's RenderingDevice::shader_compile_spirv_from_source().
-//
-// The shader mirrors the CPU BVH traversal from bvh.h exactly:
-//   1. One thread per ray (local_size_x = 64 threads per workgroup)
-//   2. Iterative stack-based BVH traversal (no recursion)
-//   3. Front-to-back child ordering for early termination
-//   4. Precomputed inv_direction (computed per-ray in the shader)
-//   5. Möller-Trumbore triangle intersection with precomputed edges
-//
-// STRUCT LAYOUTS must match gpu_structs.h exactly (std430).
-// See gpu_structs.h for the full byte-level memory map.
-
-static const char *BVH_TRAVERSE_GLSL = R"(
 #version 450
 
 // ============================================================================
@@ -33,7 +15,7 @@ layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 struct GPUTriangle {
     vec3 v0;     uint id;
-    vec3 edge1;  float _pad1;
+    vec3 edge1;  uint layers;
     vec3 edge2;  float _pad2;
     vec3 normal; float _pad3;
 };
@@ -82,6 +64,7 @@ layout(set = 0, binding = 3, std430) restrict writeonly buffer IntersectionBuffe
 
 layout(push_constant, std430) uniform PushConstants {
     uint ray_count;
+    uint query_mask;
 };
 
 // ============================================================================
@@ -170,10 +153,10 @@ vec3 safe_inv_direction(vec3 dir) {
 // Each thread gets its own stack segment in workgroup shared memory.
 // Why shared memory instead of local arrays?
 //   - GLSL local arrays compile to "local memory" which is actually device DRAM.
-//   - Shared memory is on-chip SRAM: 5-10× lower latency than device memory.
+//   - Shared memory is on-chip SRAM: 5-10x lower latency than device memory.
 //   - This frees registers for ray/intersection data, improving occupancy.
 //
-// Memory budget: 64 threads × 24 entries × 4 bytes × 2 arrays = 12 KB
+// Memory budget: 64 threads x 24 entries x 4 bytes x 2 arrays = 12 KB
 // GTX 1650 Ti (Turing) has 64 KB shared memory — 12 KB allows 5 workgroups per SM.
 // Depth 24 supports BVH with up to 2^24 (~16M) nodes — far beyond any scene.
 
@@ -249,6 +232,8 @@ void main() {
             // ---- LEAF NODE: test all triangles ----
             for (uint i = 0u; i < node_count; i++) {
                 uint tri_idx = node_left_first + i;
+                // Skip triangles not on any queried layer.
+                if ((triangles[tri_idx].layers & query_mask) == 0u) continue;
                 vec3 hp, hn;
                 if (ray_triangle(origin, direction, t_min,
                                  triangles[tri_idx].v0,
@@ -321,4 +306,3 @@ void main() {
     results[ray_idx].normal   = best_normal;
     results[ray_idx].prim_id  = best_prim;
 }
-)";

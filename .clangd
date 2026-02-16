@@ -1,0 +1,23 @@
+# .clangd — Configuration for clangd language server.
+#
+# This project uses SCons (not CMake), so there is no automatic
+# compile_commands.json.  These flags mirror what SConstruct sets.
+
+CompileFlags:
+  # Force clang++ driver mode (Windows defaults to clang-cl which
+  # does not recognise -fexceptions).
+  Compiler: clang++
+  Add:
+    # Project include root (allows #include "core/ray.h" etc.)
+    - -Isrc/
+    # godot-cpp headers
+    - -Igodot-cpp/include/
+    - -Igodot-cpp/gen/include/
+    - -Igodot-cpp/gdextension/
+    # Enable C++ exceptions (SConstruct passes /EHsc on MSVC)
+    - -fexceptions
+    # Match the C++ standard used by godot-cpp
+    - -std=c++17
+
+Diagnostics:
+  UnusedIncludes: None

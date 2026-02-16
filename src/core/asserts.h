@@ -31,8 +31,8 @@
 //   RT_ASSERT_VALID_RAY(ray);
 
 #include <cstdio>
-#include <cstdlib>
 #include <cmath>
+#include <godot_cpp/core/error_macros.hpp>
 
 // RT_DEBUG_ACTIVE is 1 when building debug targets.
 // Godot's SCons sets NDEBUG for release/template_release builds.
@@ -43,12 +43,16 @@
 #endif
 
 // ---- Internal abort helper (shared by RT_ASSERT and RT_VERIFY) ----
+// Uses Godot's ERR_PRINT so that failure messages appear in the editor Output
+// panel (std::fprintf(stderr) is invisible on Windows). Then aborts.
 #define RT_ASSERT_FAIL_(tag, condition, message) \
 	do { \
-		std::fprintf(stderr, \
-			"[%s FAILED] %s\n  File: %s\n  Line: %d\n  Condition: %s\n", \
+		char _rt_buf[512]; \
+		std::snprintf(_rt_buf, sizeof(_rt_buf), \
+			"[%s FAILED] %s | File: %s | Line: %d | Condition: %s", \
 			(tag), (message), __FILE__, __LINE__, #condition); \
-		std::abort(); \
+		ERR_PRINT(_rt_buf); \
+		GENERATE_TRAP(); \
 	} while (0)
 
 // ---- RT_ASSERT — Debug only (zero cost in release) ----
@@ -120,8 +124,10 @@
 // Always active (like RT_VERIFY) since reaching this IS the bug.
 #define RT_UNREACHABLE(message) \
 	do { \
-		std::fprintf(stderr, \
-			"[RT_UNREACHABLE] %s\n  File: %s\n  Line: %d\n", \
+		char _rt_buf[256]; \
+		std::snprintf(_rt_buf, sizeof(_rt_buf), \
+			"[RT_UNREACHABLE] %s | File: %s | Line: %d", \
 			(message), __FILE__, __LINE__); \
-		std::abort(); \
+		ERR_PRINT(_rt_buf); \
+		GENERATE_TRAP(); \
 	} while (0)

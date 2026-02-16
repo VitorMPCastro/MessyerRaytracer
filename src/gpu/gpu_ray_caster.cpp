@@ -10,7 +10,7 @@
 
 #include "gpu_ray_caster.h"
 #include "gpu_structs.h"
-#include "bvh_traverse_comp.h"
+#include "shaders/bvh_traverse.gen.h"
 
 #include "core/ray.h"
 #include "core/intersection.h"
@@ -140,6 +140,12 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 	RT_ASSERT(initialized_, "GPU must be initialized before upload_scene");
 	RT_ASSERT(!triangles.empty(), "Cannot upload empty triangle array");
 
+	// Drain any pending async dispatch before freeing buffers.
+	if (pending_async_ && rd_) {
+		rd_->sync();
+		pending_async_ = false;
+	}
+
 	// ---- Convert triangles to GPU format ----
 	std::vector<GPUTrianglePacked> gpu_tris(triangles.size());
 	for (size_t i = 0; i < triangles.size(); i++) {
@@ -148,7 +154,7 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 		g.v0[0] = t.v0.x; g.v0[1] = t.v0.y; g.v0[2] = t.v0.z;
 		g.id = t.id;
 		g.edge1[0] = t.edge1.x; g.edge1[1] = t.edge1.y; g.edge1[2] = t.edge1.z;
-		g._pad1 = 0.0f;
+		g.layers = t.layers;
 		g.edge2[0] = t.edge2.x; g.edge2[1] = t.edge2.y; g.edge2[2] = t.edge2.z;
 		g._pad2 = 0.0f;
 		g.normal[0] = t.normal.x; g.normal[1] = t.normal.y; g.normal[2] = t.normal.z;
@@ -203,13 +209,14 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 // Cast rays (nearest hit) — find closest intersection per ray
 // ============================================================================
 
-void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count) {
+void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count,
+		uint32_t query_mask) {
 	if (!is_available() || count <= 0) return;
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT_NOT_NULL(results);
 	RT_ASSERT(count > 0, "GPURayCaster::cast_rays: count must be positive");
 
-	dispatch_rays_internal(rays, count, pipeline_);
+	dispatch_rays_internal(rays, count, pipeline_, query_mask);
 
 	// ---- Read back results ----
 	uint32_t result_bytes = static_cast<uint32_t>(count * sizeof(GPUIntersectionPacked));
@@ -237,13 +244,14 @@ void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count) 
 // Cast rays (any hit) — shadow/occlusion queries, early exit on first hit
 // ============================================================================
 
-void GPURayCaster::cast_rays_any_hit(const Ray *rays, bool *hit_results, int count) {
+void GPURayCaster::cast_rays_any_hit(const Ray *rays, bool *hit_results, int count,
+		uint32_t query_mask) {
 	if (!is_available() || count <= 0) return;
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT_NOT_NULL(hit_results);
 	RT_ASSERT(count > 0, "GPURayCaster::cast_rays_any_hit: count must be positive");
 
-	dispatch_rays_internal(rays, count, pipeline_any_hit_);
+	dispatch_rays_internal(rays, count, pipeline_any_hit_, query_mask);
 
 	// ---- Read back results and extract hit/miss booleans ----
 	uint32_t result_bytes = static_cast<uint32_t>(count * sizeof(GPUIntersectionPacked));
@@ -261,8 +269,9 @@ void GPURayCaster::cast_rays_any_hit(const Ray *rays, bool *hit_results, int cou
 // Internal: shared dispatch logic for both ray casting modes
 // ============================================================================
 
-void GPURayCaster::dispatch_rays_internal(const Ray *rays, int count, const RID &pipeline) {
-	dispatch_rays_no_sync(rays, count, pipeline);
+void GPURayCaster::dispatch_rays_internal(const Ray *rays, int count, const RID &pipeline,
+		uint32_t query_mask) {
+	dispatch_rays_no_sync(rays, count, pipeline, query_mask);
 	rd_->sync();
 }
 
@@ -270,20 +279,20 @@ void GPURayCaster::dispatch_rays_internal(const Ray *rays, int count, const RID 
 // Async dispatch — submit without blocking
 // ============================================================================
 
-void GPURayCaster::submit_async(const Ray *rays, int count) {
+void GPURayCaster::submit_async(const Ray *rays, int count, uint32_t query_mask) {
 	if (!is_available() || count <= 0) return;
 	RT_ASSERT(!pending_async_, "submit_async called while previous dispatch is still pending");
 	RT_ASSERT_NOT_NULL(rays);
-	dispatch_rays_no_sync(rays, count, pipeline_);
+	dispatch_rays_no_sync(rays, count, pipeline_, query_mask);
 	pending_count_ = count;
 	pending_async_ = true;
 }
 
-void GPURayCaster::submit_async_any_hit(const Ray *rays, int count) {
+void GPURayCaster::submit_async_any_hit(const Ray *rays, int count, uint32_t query_mask) {
 	if (!is_available() || count <= 0) return;
 	RT_ASSERT(!pending_async_, "submit_async_any_hit called while previous dispatch is still pending");
 	RT_ASSERT_NOT_NULL(rays);
-	dispatch_rays_no_sync(rays, count, pipeline_any_hit_);
+	dispatch_rays_no_sync(rays, count, pipeline_any_hit_, query_mask);
 	pending_count_ = count;
 	pending_async_ = true;
 }
@@ -341,7 +350,8 @@ void GPURayCaster::collect_any_hit(bool *hit_results, int count) {
 // Internal: dispatch without sync (used by both sync and async paths)
 // ============================================================================
 
-void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &pipeline) {
+void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &pipeline,
+		uint32_t query_mask) {
 	RT_ASSERT(count > 0, "dispatch_rays_no_sync: count must be positive");
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT(rd_ != nullptr, "dispatch_rays_no_sync: rendering device is null");
@@ -374,6 +384,7 @@ void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &
 	// ---- Push constants ----
 	GPUPushConstants push{};
 	push.ray_count = static_cast<uint32_t>(count);
+	push.query_mask = query_mask;
 	PackedByteArray push_data;
 	push_data.resize(sizeof(GPUPushConstants));
 	memcpy(push_data.ptrw(), &push, sizeof(GPUPushConstants));
@@ -422,16 +433,20 @@ void GPURayCaster::cleanup() {
 
 void GPURayCaster::free_scene_buffers() {
 	if (!rd_) return;
-	if (triangle_buffer_.is_valid())  { rd_->free_rid(triangle_buffer_);  triangle_buffer_ = RID(); }
-	if (bvh_node_buffer_.is_valid())  { rd_->free_rid(bvh_node_buffer_);  bvh_node_buffer_ = RID(); }
+	// Free uniform set FIRST — it holds references to these buffers.
+	if (uniform_set_.is_valid())       { rd_->free_rid(uniform_set_);       uniform_set_ = RID(); }
+	if (triangle_buffer_.is_valid())   { rd_->free_rid(triangle_buffer_);   triangle_buffer_ = RID(); }
+	if (bvh_node_buffer_.is_valid())   { rd_->free_rid(bvh_node_buffer_);   bvh_node_buffer_ = RID(); }
 	uniform_set_dirty_ = true;
 	scene_uploaded_ = false;
 }
 
 void GPURayCaster::free_ray_buffers() {
 	if (!rd_) return;
-	if (ray_buffer_.is_valid())    { rd_->free_rid(ray_buffer_);    ray_buffer_ = RID(); }
-	if (result_buffer_.is_valid()) { rd_->free_rid(result_buffer_);  result_buffer_ = RID(); }
+	// Free uniform set FIRST — it holds references to these buffers.
+	if (uniform_set_.is_valid())    { rd_->free_rid(uniform_set_);    uniform_set_ = RID(); }
+	if (ray_buffer_.is_valid())     { rd_->free_rid(ray_buffer_);     ray_buffer_ = RID(); }
+	if (result_buffer_.is_valid())  { rd_->free_rid(result_buffer_);  result_buffer_ = RID(); }
 	uniform_set_dirty_ = true;
 	ray_buffer_capacity_ = 0;
 }

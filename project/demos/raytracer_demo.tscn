@@ -1,0 +1,35 @@
+[gd_scene format=3 uid="uid://v4xnvttls3wu"]
+
+[ext_resource type="Script" uid="uid://c4jpuqoxxedit" path="res://demos/raytracer_demo.gd" id="1_jv7eu"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_es7oo"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_s4m86"]
+albedo_color = Color(0.5137255, 0.15294118, 0.10980392, 1)
+
+[sub_resource type="SphereMesh" id="SphereMesh_38d6n"]
+material = SubResource("StandardMaterial3D_s4m86")
+
+[sub_resource type="BoxMesh" id="BoxMesh_ix0o7"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_cvd0r"]
+albedo_color = Color(0.08627451, 0.16078432, 0.40392157, 1)
+
+[node name="Node3D" type="Node3D" unique_id=1968996066]
+script = ExtResource("1_jv7eu")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=84043512]
+transform = Transform3D(0.70710677, 0.29883623, -0.6408563, 0, 0.90630776, 0.42261827, 0.70710677, -0.29883623, 0.6408563, 0, 0, 0)
+
+[node name="Floor" type="MeshInstance3D" parent="." unique_id=363732962]
+transform = Transform3D(5.842283, 0, 0, 0, 1.2956791, 0, 0, 0, 8.619136, 0, -0.5068244, 0)
+mesh = SubResource("PlaneMesh_es7oo")
+
+[node name="Sphere" type="MeshInstance3D" parent="." unique_id=893098710]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.1953831, 0.028307796, 0)
+mesh = SubResource("SphereMesh_38d6n")
+
+[node name="Box" type="MeshInstance3D" parent="." unique_id=980389732]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.2715882, 0.028307796, 0)
+mesh = SubResource("BoxMesh_ix0o7")
+surface_material_override/0 = SubResource("StandardMaterial3D_cvd0r")

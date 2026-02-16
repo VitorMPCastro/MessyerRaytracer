@@ -28,7 +28,6 @@
 #include "core/ray.h"
 #include "core/intersection.h"
 #include "core/triangle.h"
-#include "simd/simd_tri.h"
 #include "simd/ray_packet.h"
 #include "core/aabb_intersect.h"
 #include "core/stats.h"
@@ -51,6 +50,7 @@ struct BVHNode {
 	godot::AABB bounds;
 	uint32_t left_first = 0;
 	uint32_t count = 0;
+	uint32_t subtree_layer_mask = 0xFFFFFFFF; // Union of all descendant triangle layer masks
 
 	bool is_leaf() const { return count > 0; }
 };
@@ -102,6 +102,9 @@ public:
 		// After this: left child = parent_index + 1 (implicit), left_first = right child index.
 		reorder_dfs();
 
+		// Compute per-node subtree layer masks (bottom-up) for layer-based culling.
+		compute_subtree_masks(triangles);
+
 		// Trim unused node slots.
 		nodes_.resize(node_count_);
 		tris_ = nullptr;
@@ -117,7 +120,7 @@ public:
 	// Trace a ray through the BVH, returning the closest intersection.
 	// Each AABB is tested exactly once. Stored tmin enables O(1) early exit.
 	Intersection cast_ray(const Ray &r, const std::vector<Triangle> &triangles,
-			RayStats *stats = nullptr) const {
+			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
 		Intersection closest;
 		if (!built_ || nodes_.empty()) return closest;
 		RT_ASSERT_VALID_RAY(r);
@@ -152,18 +155,26 @@ public:
 
 			const BVHNode &node = nodes_[entry.idx];
 
-			if (node.is_leaf()) {
-				// SIMD test: up to 4 triangles tested simultaneously.
-				if (stats) stats->tri_tests += node.count;
-				intersect_leaf_nearest(r, &all_tris[node.left_first], node.count, closest);
+		if (node.is_leaf()) {
+				// Test each triangle in the leaf, filtering by layer mask.
+				for (uint32_t j = 0; j < node.count; j++) {
+					const Triangle &tri = all_tris[node.left_first + j];
+					if ((tri.layers & query_mask) == 0) continue;
+					if (stats) stats->tri_tests++;
+					if (tri.intersect(r, closest)) {
+						closest.hit_layers = tri.layers;
+					}
+				}
 			} else {
 				// Test both children's AABBs. Push only those the ray enters.
 				uint32_t left = entry.idx + 1;      // Implicit: left child is next in DFS order
 				uint32_t right = node.left_first;    // Explicit: right child index stored in node
 
 				float tmin_l, tmax_l, tmin_r, tmax_r;
-				bool hit_l = ray_intersects_aabb(r, nodes_[left].bounds, tmin_l, tmax_l);
-				bool hit_r = ray_intersects_aabb(r, nodes_[right].bounds, tmin_r, tmax_r);
+				bool hit_l = (nodes_[left].subtree_layer_mask & query_mask) != 0 &&
+				             ray_intersects_aabb(r, nodes_[left].bounds, tmin_l, tmax_l);
+				bool hit_r = (nodes_[right].subtree_layer_mask & query_mask) != 0 &&
+				             ray_intersects_aabb(r, nodes_[right].bounds, tmin_r, tmax_r);
 
 				// Further filter: skip children that can't beat current closest.
 				hit_l = hit_l && (tmin_l <= closest.t);
@@ -199,7 +210,7 @@ public:
 	// Returns true if the ray hits ANY geometry. Exits on first hit.
 	// Used for shadow rays, line-of-sight checks, audio occlusion.
 	bool any_hit(const Ray &r, const std::vector<Triangle> &triangles,
-			RayStats *stats = nullptr) const {
+			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
 		if (!built_ || nodes_.empty()) return false;
 		RT_ASSERT_VALID_RAY(r);
 		RT_ASSERT(!triangles.empty(), "BVH::any_hit called with empty triangle array");
@@ -228,17 +239,27 @@ public:
 			if (!ray_intersects_aabb(r, node.bounds, tmin, tmax)) continue;
 
 			if (node.is_leaf()) {
-				// SIMD any_hit: test all leaf triangles in parallel.
-				if (stats) stats->tri_tests += node.count;
-				if (intersect_leaf_any(r, &all_tris[node.left_first], node.count)) {
-					if (stats) stats->hits++;
-					return true; // Early exit!
+				// Test each triangle, filtering by layer mask.
+				for (uint32_t j = 0; j < node.count; j++) {
+					const Triangle &tri = all_tris[node.left_first + j];
+					if ((tri.layers & query_mask) == 0) continue;
+					if (stats) stats->tri_tests++;
+					Intersection temp;
+					if (tri.intersect(r, temp)) {
+						if (stats) stats->hits++;
+						return true; // Early exit!
+					}
 				}
 			} else {
 				// No front-to-back ordering needed for any_hit.
 				// We just need to find ANY hit as fast as possible.
-				stack[sp++] = node.left_first;    // Right child (stored)
-				stack[sp++] = node_idx + 1;        // Left child (implicit: next in DFS order)
+				// Skip children whose subtree has no matching layers.
+				uint32_t right_idx = node.left_first;
+				uint32_t left_idx = node_idx + 1;
+				if ((nodes_[right_idx].subtree_layer_mask & query_mask) != 0)
+					stack[sp++] = right_idx;
+				if ((nodes_[left_idx].subtree_layer_mask & query_mask) != 0)
+					stack[sp++] = left_idx;
 			}
 		}
 
@@ -256,7 +277,8 @@ public:
 	// 'count' is the number of valid rays (1–4). Unused result slots are untouched.
 #if RAYTRACER_PACKET_SSE
 	void cast_ray_packet4(const Ray *rays, Intersection *results, int count,
-			const std::vector<Triangle> &triangles, RayStats *stats = nullptr) const {
+			const std::vector<Triangle> &triangles, RayStats *stats = nullptr,
+			uint32_t query_mask = 0xFFFFFFFF) const {
 		if (!built_ || nodes_.empty() || count <= 0) return;
 		RT_ASSERT(count >= 1 && count <= 4, "BVH::cast_ray_packet4: count must be 1-4");
 		RT_ASSERT_NOT_NULL(rays);
@@ -286,14 +308,17 @@ public:
 			if (stats) stats->bvh_nodes_visited++;
 
 			if (node.is_leaf()) {
-				// Test each active ray against the leaf's triangles.
-				if (stats) stats->tri_tests += node.count * count;
+				// Test each active ray against the leaf's triangles, with layer filtering.
 				for (int i = 0; i < count; i++) {
 					if (!(hit_mask & (1 << i))) continue;
-					if (intersect_leaf_nearest(rays[i], &all_tris[node.left_first],
-							node.count, results[i])) {
-						// Update packet's best_t so future AABB tests are tighter.
-						packet.update_best_t(i, results[i].t);
+					for (uint32_t j = 0; j < node.count; j++) {
+						const Triangle &tri = all_tris[node.left_first + j];
+						if ((tri.layers & query_mask) == 0) continue;
+						if (stats) stats->tri_tests++;
+						if (tri.intersect(rays[i], results[i])) {
+							results[i].hit_layers = tri.layers;
+							packet.update_best_t(i, results[i].t);
+						}
 					}
 				}
 			} else {
@@ -348,16 +373,23 @@ public:
 				// Recompute bounds from leaf's triangles.
 				if (node.count > 0) {
 					node.bounds = triangles[node.left_first].aabb();
-					for (uint32_t j = 1; j < node.count; j++) {
-						node.bounds = node.bounds.merge(
-								triangles[node.left_first + j].aabb());
+					uint32_t mask = 0;
+					for (uint32_t j = 0; j < node.count; j++) {
+						if (j > 0) {
+							node.bounds = node.bounds.merge(
+									triangles[node.left_first + j].aabb());
+						}
+						mask |= triangles[node.left_first + j].layers;
 					}
+					node.subtree_layer_mask = mask;
 				}
 			} else {
 				// Internal node: union of children's bounds.
 				uint32_t left = static_cast<uint32_t>(i) + 1;      // Implicit DFS left child
 				uint32_t right = node.left_first;                    // Stored right child
 				node.bounds = nodes_[left].bounds.merge(nodes_[right].bounds);
+				node.subtree_layer_mask = nodes_[left].subtree_layer_mask |
+				                          nodes_[right].subtree_layer_mask;
 			}
 		}
 	}
@@ -450,6 +482,28 @@ private:
 	}
 
 	// ---- Bounds computation ----
+
+	// Compute subtree layer masks bottom-up after DFS reorder.
+	// Each leaf's mask = OR of its triangle layer masks.
+	// Each internal node's mask = OR of both children's masks.
+	// This lets traversal skip entire subtrees that have no matching layers.
+	void compute_subtree_masks(const std::vector<Triangle> &triangles) {
+		for (int i = static_cast<int>(node_count_) - 1; i >= 0; i--) {
+			BVHNode &node = nodes_[i];
+			if (node.is_leaf()) {
+				uint32_t mask = 0;
+				for (uint32_t j = 0; j < node.count; j++) {
+					mask |= triangles[node.left_first + j].layers;
+				}
+				node.subtree_layer_mask = mask;
+			} else {
+				uint32_t left = static_cast<uint32_t>(i) + 1;
+				uint32_t right = node.left_first;
+				node.subtree_layer_mask = nodes_[left].subtree_layer_mask |
+				                          nodes_[right].subtree_layer_mask;
+			}
+		}
+	}
 
 	// Compute tight AABB for all triangles belonging to a node.
 	void compute_bounds(uint32_t node_idx) {

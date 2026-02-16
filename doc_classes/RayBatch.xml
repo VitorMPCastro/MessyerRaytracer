@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="RayBatch" inherits="RefCounted" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Batch ray casting for high-throughput queries from GDScript.
+	</brief_description>
+	<description>
+		RayBatch lets you cast many rays in a single dispatch call, avoiding the per-ray Dictionary overhead of [method RayTracerServer.cast_ray].
+		Build a batch by calling [method add_ray] for each ray, then call [method cast] to dispatch them all at once through the server's optimal backend (CPU thread pool or GPU compute).
+		Results are accessed by index using [method is_hit], [method get_position], etc.
+		The batch can be reused: call [method clear], add new rays, and [method cast] again.
+
+		[b]Example:[/b]
+		[codeblock]
+		var batch = RayBatch.new()
+		batch.layer_mask = 0x03  # only layers 1 and 2
+		for ray_dir in directions:
+		    batch.add_ray(origin, ray_dir)
+		batch.cast()
+		for i in batch.get_hit_count():
+		    if batch.is_hit(i):
+		        print(batch.get_position(i))
+		[/codeblock]
+	</description>
+	<methods>
+		<method name="add_ray">
+			<return type="void" />
+			<param index="0" name="origin" type="Vector3" />
+			<param index="1" name="direction" type="Vector3" />
+			<description>
+				Add a ray to the batch. The direction is normalized internally. Default t_min=0.001, t_max=INF.
+			</description>
+		</method>
+		<method name="add_ray_ex">
+			<return type="void" />
+			<param index="0" name="origin" type="Vector3" />
+			<param index="1" name="direction" type="Vector3" />
+			<param index="2" name="t_min" type="float" />
+			<param index="3" name="t_max" type="float" />
+			<description>
+				Add a ray with explicit t_min and t_max range limits.
+			</description>
+		</method>
+		<method name="clear">
+			<return type="void" />
+			<description>
+				Remove all rays and results. The batch can be reused after clearing.
+			</description>
+		</method>
+		<method name="get_ray_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Number of rays currently queued in this batch.
+			</description>
+		</method>
+		<method name="cast">
+			<return type="void" />
+			<description>
+				Dispatch all queued rays through [RayTracerServer]. After this call, results are accessible via [method is_hit], [method get_position], etc. Uses the server's current backend (CPU/GPU/Auto).
+			</description>
+		</method>
+		<method name="get_hit_count" qualifiers="const">
+			<return type="int" />
+			<description>
+				Number of results available (equals ray count after [method cast]).
+			</description>
+		</method>
+		<method name="is_hit" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns [code]true[/code] if ray [param index] hit geometry. Only valid in NEAREST mode.
+			</description>
+		</method>
+		<method name="get_position" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="index" type="int" />
+			<description>
+				World-space hit position for ray [param index]. Only valid if [method is_hit] is true.
+			</description>
+		</method>
+		<method name="get_normal" qualifiers="const">
+			<return type="Vector3" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Surface normal at the hit point for ray [param index].
+			</description>
+		</method>
+		<method name="get_distance" qualifiers="const">
+			<return type="float" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Distance along the ray to the hit point for ray [param index].
+			</description>
+		</method>
+		<method name="get_prim_id" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Triangle/primitive ID of the hit surface for ray [param index].
+			</description>
+		</method>
+		<method name="get_hit_layers" qualifiers="const">
+			<return type="int" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Visibility layer bitmask of the triangle hit by ray [param index].
+			</description>
+		</method>
+		<method name="get_result" qualifiers="const">
+			<return type="Dictionary" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Full result for ray [param index] as a Dictionary with keys: [code]hit[/code], [code]position[/code], [code]normal[/code], [code]distance[/code], [code]prim_id[/code], [code]hit_layers[/code]. Compatible with [method RayTracerServer.cast_ray] format.
+			</description>
+		</method>
+		<method name="get_any_hit" qualifiers="const">
+			<return type="bool" />
+			<param index="0" name="index" type="int" />
+			<description>
+				Returns [code]true[/code] if ray [param index] hit anything. Only valid in ANY_HIT mode.
+			</description>
+		</method>
+		<method name="get_elapsed_ms" qualifiers="const">
+			<return type="float" />
+			<description>
+				Wall-clock milliseconds the last [method cast] took.
+			</description>
+		</method>
+		<method name="get_stats" qualifiers="const">
+			<return type="Dictionary" />
+			<description>
+				Performance statistics from the last [method cast]. Only populated if [member collect_stats] is [code]true[/code]. Keys: [code]rays_cast[/code], [code]tri_tests[/code], [code]bvh_nodes_visited[/code], [code]hits[/code], [code]avg_tri_tests_per_ray[/code], [code]hit_rate_percent[/code].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="mode" type="int" setter="set_mode" getter="get_mode" enum="RayBatch.Mode" default="0">
+			Query mode: [code]MODE_NEAREST[/code] (find closest hit) or [code]MODE_ANY_HIT[/code] (early-exit shadow/occlusion).
+		</member>
+		<member name="layer_mask" type="int" setter="set_layer_mask" getter="get_layer_mask" default="2147483647">
+			Visibility layer bitmask. Only triangles whose layers overlap this mask will be tested.
+		</member>
+		<member name="collect_stats" type="bool" setter="set_collect_stats" getter="get_collect_stats" default="false">
+			When [code]true[/code], [method get_stats] is populated after [method cast]. Has a small performance cost on the CPU path.
+		</member>
+	</members>
+	<constants>
+		<constant name="MODE_NEAREST" value="0" enum="Mode">
+			Find the closest intersection per ray.
+		</constant>
+		<constant name="MODE_ANY_HIT" value="1" enum="Mode">
+			Early-exit on first intersection (fastest for shadow/occlusion queries).
+		</constant>
+	</constants>
+</class>

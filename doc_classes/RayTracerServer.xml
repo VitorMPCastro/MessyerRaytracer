@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="RayTracerServer" inherits="Object" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Singleton server that owns all ray tracing infrastructure -- mesh registration, acceleration structures, and ray dispatch.
+	</brief_description>
+	<description>
+		RayTracerServer is the central hub of the custom ray tracing system. It manages registered meshes via a two-level acceleration structure (TLAS over per-mesh BLAS), owns the [code]RayDispatcher[/code] (CPU thread pool + GPU Vulkan compute pipeline), and exposes ray casting to GDScript.
+		[b]This system does NOT use Godot's built-in physics or RayCast3D.[/b] It operates on raw triangle data with its own BVH (Bounding Volume Hierarchy), making it suitable for custom ray queries (visibility, audio propagation, AI line-of-sight, etc.).
+		[b]Quick start:[/b]
+		[codeblock]
+		var server = RayTracerServer
+		var id = server.register_mesh($MyMesh)
+		server.build()
+
+		var result = server.cast_ray(origin, direction)
+		if result["hit"]:
+		    print("Hit at ", result["position"])
+		[/codeblock]
+		[b]Architecture:[/b]
+		Object-space triangles are extracted once at registration. On [method build], the server reads current global transforms from each registered node, constructs the TLAS, then flattens all instance triangles to world space and feeds them into a flat BVH for dispatch. This preserves SIMD packet traversal on CPU and the existing GPU compute shader.
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="register_mesh">
+			<return type="int" />
+			<param index="0" name="mesh_instance" type="Node" />
+			<description>
+				Register a [MeshInstance3D] node. Extracts object-space triangles from its [Mesh] resource. Returns a mesh_id (int) used for later [method unregister_mesh]. Returns -1 if the node has no valid geometry.
+				Call [method build] after registration to rebuild acceleration structures.
+			</description>
+		</method>
+		<method name="unregister_mesh">
+			<return type="void" />
+			<param index="0" name="mesh_id" type="int" />
+			<description>
+				Remove a previously registered mesh by its mesh_id. Call [method build] to apply changes.
+			</description>
+		</method>
+		<method name="build">
+			<return type="void" />
+			<description>
+				Build or rebuild all acceleration structures. Re-reads global transforms from registered nodes. Must be called after [method register_mesh] / [method unregister_mesh] and whenever meshes move.
+				If the GPU backend is active, the scene is automatically uploaded to the GPU.
+			</description>
+		</method>
+		<method name="clear">
+			<return type="void" />
+			<description>
+				Remove all registered meshes and clear all acceleration structures.
+			</description>
+		</method>
+		<method name="cast_ray">
+			<return type="Dictionary" />
+			<param index="0" name="origin" type="Vector3" />
+			<param index="1" name="direction" type="Vector3" />
+			<description>
+				Cast a single ray from [param origin] along [param direction]. Returns a Dictionary:
+				[codeblock]
+				{ "hit": bool, "position": Vector3, "normal": Vector3, "distance": float, "prim_id": int }
+				[/codeblock]
+			</description>
+		</method>
+		<method name="any_hit">
+			<return type="bool" />
+			<param index="0" name="origin" type="Vector3" />
+			<param index="1" name="direction" type="Vector3" />
+			<param index="2" name="max_distance" type="float" />
+			<description>
+				Test if a ray hits anything within [param max_distance]. Uses a fast early-exit path (first hit terminates traversal).
+			</description>
+		</method>
+		<method name="set_backend">
+			<return type="void" />
+			<param index="0" name="mode" type="int" enum="RayTracerServer.BackendMode" />
+			<description>
+				Set the compute backend: [constant BACKEND_CPU], [constant BACKEND_GPU], or [constant BACKEND_AUTO].
+				GPU mode initializes a local Vulkan RenderingDevice on first use. Falls back to CPU if GPU init fails.
+			</description>
+		</method>
+		<method name="get_backend">
+			<return type="int" enum="RayTracerServer.BackendMode" />
+			<description>
+				Returns the current backend mode.
+			</description>
+		</method>
+		<method name="is_gpu_available">
+			<return type="bool" />
+			<description>
+				Returns [code]true[/code] if the GPU compute backend has been successfully initialized.
+			</description>
+		</method>
+		<method name="get_last_stats">
+			<return type="Dictionary" />
+			<description>
+				Returns performance statistics from the last batch cast as a Dictionary with keys: rays_cast, tri_tests, bvh_nodes_visited, hits, avg_tri_tests_per_ray, avg_nodes_per_ray, hit_rate_percent, cast_time_ms.
+			</description>
+		</method>
+		<method name="get_last_cast_ms">
+			<return type="float" />
+			<description>
+				Returns the wall-clock time of the most recent cast operation in milliseconds.
+			</description>
+		</method>
+		<method name="get_triangle_count">
+			<return type="int" />
+			<description>
+				Returns the total number of world-space triangles in the current scene.
+			</description>
+		</method>
+		<method name="get_mesh_count">
+			<return type="int" />
+			<description>
+				Returns the number of currently registered (valid) meshes.
+			</description>
+		</method>
+		<method name="get_bvh_node_count">
+			<return type="int" />
+			<description>
+				Returns the number of nodes in the flat BVH.
+			</description>
+		</method>
+		<method name="get_bvh_depth">
+			<return type="int" />
+			<description>
+				Returns the maximum depth of the BVH tree.
+			</description>
+		</method>
+		<method name="get_thread_count">
+			<return type="int" />
+			<description>
+				Returns the number of worker threads in the CPU thread pool.
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="backend" type="int" setter="set_backend" getter="get_backend" enum="RayTracerServer.BackendMode" default="0">
+			The compute backend used for ray dispatch.
+		</member>
+	</members>
+	<constants>
+		<constant name="BACKEND_CPU" value="0" enum="BackendMode">
+			Use the CPU backend with multithreading and SIMD ray packets.
+		</constant>
+		<constant name="BACKEND_GPU" value="1" enum="BackendMode">
+			Use the GPU backend with a Vulkan compute shader on a local RenderingDevice.
+		</constant>
+		<constant name="BACKEND_AUTO" value="2" enum="BackendMode">
+			Automatically choose between CPU and GPU based on batch size.
+		</constant>
+	</constants>
+</class>

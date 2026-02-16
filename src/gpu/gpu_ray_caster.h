@@ -66,12 +66,14 @@ public:
 	// Cast rays on the GPU (nearest hit). Writes results into the 'results' array.
 	// Each result corresponds to the ray at the same index.
 	// 'count' is the number of rays (and results).
-	void cast_rays(const Ray *rays, Intersection *results, int count);
+	void cast_rays(const Ray *rays, Intersection *results, int count,
+			uint32_t query_mask = 0xFFFFFFFF);
 
 	// Cast rays using any_hit mode (early exit on first intersection).
 	// For shadow/occlusion queries. Sets hit_results[i] = true if ray i hits anything.
 	// Much faster than nearest-hit when you only need yes/no answers.
-	void cast_rays_any_hit(const Ray *rays, bool *hit_results, int count);
+	void cast_rays_any_hit(const Ray *rays, bool *hit_results, int count,
+			uint32_t query_mask = 0xFFFFFFFF);
 
 	// ---- Async dispatch (submit / collect pattern) ----
 	// Allows the caller to overlap CPU work with GPU computation.
@@ -85,8 +87,8 @@ public:
 
 	// Upload rays and dispatch compute shader. Returns immediately after submit().
 	// The GPU begins working in the background.
-	void submit_async(const Ray *rays, int count);
-	void submit_async_any_hit(const Ray *rays, int count);
+	void submit_async(const Ray *rays, int count, uint32_t query_mask = 0xFFFFFFFF);
+	void submit_async_any_hit(const Ray *rays, int count, uint32_t query_mask = 0xFFFFFFFF);
 
 	// Block until the GPU finishes, then read back results.
 	// Must be called exactly once after each submit_async/submit_async_any_hit.
@@ -135,11 +137,13 @@ private:
 
 	// Upload rays, dispatch compute with given pipeline, submit+sync.
 	// After return, result_buffer_ contains GPU output ready for readback.
-	void dispatch_rays_internal(const Ray *rays, int count, const godot::RID &pipeline);
+	void dispatch_rays_internal(const Ray *rays, int count, const godot::RID &pipeline,
+			uint32_t query_mask);
 
 	// Upload rays, dispatch compute, submit but do NOT sync.
 	// Used by async dispatch. Caller must call rd_->sync() before readback.
-	void dispatch_rays_no_sync(const Ray *rays, int count, const godot::RID &pipeline);
+	void dispatch_rays_no_sync(const Ray *rays, int count, const godot::RID &pipeline,
+			uint32_t query_mask);
 
 	// Number of rays in the last async submission (for readback sizing).
 	int pending_count_ = 0;

@@ -1,0 +1,54 @@
+[gd_scene format=3 uid="uid://bprobedemo001"]
+
+[ext_resource type="Script" uid="uid://2g02ek2jeax3" path="res://demos/probe_demo.gd" id="1_probe"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_floor"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_sphere"]
+albedo_color = Color(0.514, 0.153, 0.11, 1)
+
+[sub_resource type="SphereMesh" id="SphereMesh_001"]
+material = SubResource("StandardMaterial3D_sphere")
+
+[sub_resource type="BoxMesh" id="BoxMesh_001"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_box"]
+albedo_color = Color(0.086, 0.161, 0.404, 1)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_cone"]
+albedo_color = Color(0.8, 0.1, 0.1, 1)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_cone"]
+material = SubResource("StandardMaterial3D_cone")
+top_radius = 0.0
+height = 1.0
+
+[node name="Node3D" type="Node3D" unique_id=2145045046]
+script = ExtResource("1_probe")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=221909951]
+transform = Transform3D(0.707107, 0.298836, -0.640856, 0, 0.906308, 0.422618, 0.707107, -0.298836, 0.640856, 0, 0, 0)
+
+[node name="RayTracerDebug" type="RayTracerDebug" parent="." unique_id=961429031]
+debug_draw_mode = 5
+debug_bvh_depth = 5
+
+[node name="RayTracerProbe" type="RayTracerProbe" parent="." unique_id=2080643153]
+auto_register = true
+
+[node name="Floor" type="MeshInstance3D" parent="RayTracerProbe" unique_id=1241556505]
+transform = Transform3D(5.84, 0, 0, 0, 1.3, 0, 0, 0, 8.62, 0, -0.5, 0)
+mesh = SubResource("PlaneMesh_floor")
+
+[node name="Sphere" type="MeshInstance3D" parent="RayTracerProbe" unique_id=201503826]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.2, 0.03, 0)
+mesh = SubResource("SphereMesh_001")
+
+[node name="Box" type="MeshInstance3D" parent="RayTracerProbe" unique_id=2106312093]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.27, 0.03, 0)
+mesh = SubResource("BoxMesh_001")
+surface_material_override/0 = SubResource("StandardMaterial3D_box")
+
+[node name="ConeOutside" type="MeshInstance3D" parent="." unique_id=290627757]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, -2)
+mesh = SubResource("CylinderMesh_cone")

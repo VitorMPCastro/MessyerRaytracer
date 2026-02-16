@@ -38,7 +38,36 @@ Run the following command to download godot-cpp:
 env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
 env.Append(CPPPATH=["src/"])
+
+# Enable C++ exception handling on MSVC (required for try/catch in ThreadPool).
+if env.get("is_msvc", False):
+    env.Append(CCFLAGS=["/EHsc"])
+
+# ---------------------------------------------------------------------------
+# Shader embedding: convert .glsl source to C++ header with raw string literal
+# ---------------------------------------------------------------------------
+def embed_shader_action(target, source, env):
+    with open(str(source[0]), "r") as f:
+        glsl = f.read()
+    src_basename = os.path.basename(str(source[0]))
+    # bvh_traverse.comp.glsl -> BVH_TRAVERSE_GLSL
+    var_name = src_basename.split(".")[0].upper() + "_GLSL"
+    with open(str(target[0]), "w") as f:
+        f.write("#pragma once\n")
+        f.write("// Auto-generated from {} -- DO NOT EDIT\n".format(src_basename))
+        f.write('static const char *{} = R"(\n'.format(var_name))
+        f.write(glsl)
+        f.write(')";\n')
+    return 0
+
+shader_header = env.Command(
+    "src/gpu/shaders/bvh_traverse.gen.h",
+    "src/gpu/shaders/bvh_traverse.comp.glsl",
+    embed_shader_action,
+)
+
 sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp")
+env.Depends(sources, shader_header)
 
 if env["target"] in ["editor", "template_debug"]:
     try:

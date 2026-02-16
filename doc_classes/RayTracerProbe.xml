@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="RayTracerProbe" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		A lightweight probe node that registers child meshes and casts rays from its position via [RayTracerServer].
+	</brief_description>
+	<description>
+		RayTracerProbe is a [Node3D] convenience wrapper around [RayTracerServer]. It registers its [MeshInstance3D] children for ray tracing and provides shorthand methods to cast rays from the probe's global position.
+		When [member auto_register] is enabled, the probe automatically registers direct [MeshInstance3D] children on [code]_ready()[/code] and unregisters them on [code]_exit_tree()[/code].
+		[b]Usage:[/b]
+		[codeblock]
+		# Add RayTracerProbe as parent of your meshes.
+		# Set auto_register = true in the inspector.
+		# In _ready() or later:
+		RayTracerServer.build()
+
+		# Cast rays from the probe's position:
+		var result = $Probe.cast_ray(Vector3.FORWARD)
+		[/codeblock]
+	</description>
+	<tutorials>
+	</tutorials>
+	<methods>
+		<method name="register_children">
+			<return type="void" />
+			<description>
+				Register all direct [MeshInstance3D] children with [RayTracerServer]. Call [method RayTracerServer.build] afterwards.
+			</description>
+		</method>
+		<method name="register_children_recursive">
+			<return type="void" />
+			<description>
+				Recursively register all [MeshInstance3D] descendants with [RayTracerServer]. Call [method RayTracerServer.build] afterwards.
+			</description>
+		</method>
+		<method name="unregister_children">
+			<return type="void" />
+			<description>
+				Unregister all meshes that were previously registered through this probe.
+			</description>
+		</method>
+		<method name="cast_ray">
+			<return type="Dictionary" />
+			<param index="0" name="direction" type="Vector3" />
+			<description>
+				Cast a ray from the probe's [method Node3D.get_global_position] in the given [param direction]. Returns the same Dictionary as [method RayTracerServer.cast_ray].
+			</description>
+		</method>
+		<method name="any_hit">
+			<return type="bool" />
+			<param index="0" name="direction" type="Vector3" />
+			<param index="1" name="max_distance" type="float" />
+			<description>
+				Test if a ray from the probe's position hits anything within [param max_distance].
+			</description>
+		</method>
+	</methods>
+	<members>
+		<member name="auto_register" type="bool" setter="set_auto_register" getter="get_auto_register" default="false">
+			When enabled, the probe automatically registers direct MeshInstance3D children on ready and unregisters them on exit.
+		</member>
+		<member name="layer_mask" type="int" setter="set_layer_mask" getter="get_layer_mask" default="2147483647">
+			Visibility layer bitmask used when casting rays. Only geometry whose layers overlap this mask will be detected. Shown as a 3D render layer checkbox in the inspector. Default is all layers enabled.
+		</member>
+	</members>
+</class>
