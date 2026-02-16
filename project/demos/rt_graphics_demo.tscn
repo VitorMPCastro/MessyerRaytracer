@@ -115,6 +115,14 @@ current = true
 fov = 65.0
 
 [node name="RaySceneSetup" type="RaySceneSetup" parent="." unique_id=1849438382]
+ssr_enabled = true
+ssao_enabled = true
+ssil_enabled = true
+glow_enabled = true
+fog_enabled = true
+dof_enabled = true
+auto_exposure_enabled = true
+rt_reflections_enabled = true
 
 [node name="RayRenderer" type="RayRenderer" parent="." unique_id=2097255595]
 camera_path = NodePath("../Camera3D")

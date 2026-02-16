@@ -14,6 +14,7 @@
 
 #include "core/material_data.h"
 #include "core/triangle_uv.h"
+#include "core/triangle_normals.h"
 #include <cstdint>
 
 struct SceneShadeData {
@@ -29,4 +30,8 @@ struct SceneShadeData {
 	/// Per-triangle UV coordinates.  Indexed by prim_id.
 	/// Interpolate at hit point: tri_uv.interpolate(hit.u, hit.v) → Vector2.
 	const TriangleUV *triangle_uvs = nullptr;
+
+	/// Per-triangle vertex normals.  Indexed by prim_id.
+	/// Interpolate at hit point: tri_normals.interpolate(hit.u, hit.v) → Vector3.
+	const TriangleNormals *triangle_normals = nullptr;
 };

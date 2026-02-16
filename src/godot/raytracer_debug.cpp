@@ -1,7 +1,7 @@
-// raytracer_debug.cpp -- Debug visualization for ray tracing.
+// raytracer_debug.cpp — Debug visualization for ray tracing.
 //
-// All debug drawing code migrated from the old RayTracerBase prototype.
-// Now queries RayTracerServer for dispatch and scene data.
+// Implements all 7 draw modes, lifecycle management (ENTER/EXIT_TREE),
+// visibility-aware computation skip, and BVH wireframe traversal.
 
 #include "raytracer_debug.h"
 #include "raytracer_server.h"
@@ -13,7 +13,6 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <chrono>
-#include <cstdio>
 #include <cmath>
 #include <queue>
 #include <vector>
@@ -89,44 +88,91 @@ void RayTracerDebug::_bind_methods() {
 }
 
 // ============================================================================
-// Debug visualization setup
+// Lifecycle — ENTER_TREE / EXIT_TREE / VISIBILITY_CHANGED
 // ============================================================================
 
-void RayTracerDebug::_ensure_debug_objects() {
-	if (mesh_instance_ == nullptr) {
-		mesh_instance_ = memnew(MeshInstance3D);
-		mesh_instance_->set_as_top_level(true);
-		add_child(mesh_instance_);
+void RayTracerDebug::_notification(int p_what) {
+	switch (p_what) {
+		case NOTIFICATION_ENTER_TREE:
+			RT_ASSERT(is_inside_tree(), "_notification(ENTER_TREE): must be inside tree");
+			_create_debug_objects();
+			break;
+
+		case NOTIFICATION_EXIT_TREE:
+			RT_ASSERT(is_inside_tree(), "_notification(EXIT_TREE): must be inside tree");
+			_destroy_debug_objects();
+			break;
+
+		case NOTIFICATION_VISIBILITY_CHANGED:
+			// Clear drawn geometry when hidden to avoid stale visuals.
+			if (!is_visible_in_tree()) {
+				clear_debug();
+			}
+			break;
+
+		default:
+			break;
+	}
+}
+
+// ============================================================================
+// Debug object lifecycle
+// ============================================================================
+
+void RayTracerDebug::_create_debug_objects() {
+	RT_ASSERT(is_inside_tree(), "_create_debug_objects: must be inside tree");
+	RT_ASSERT(mesh_instance_ == nullptr, "_create_debug_objects: mesh_instance_ must be null on enter");
+
+	mesh_instance_ = memnew(MeshInstance3D);
+	// Top-level so the debug lines draw in world space, not relative to parent.
+	mesh_instance_->set_as_top_level(true);
+	add_child(mesh_instance_);
+
+	mesh_.instantiate();
+	mesh_instance_->set_mesh(mesh_);
+
+	material_.instantiate();
+	material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
+	material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
+	material_->set_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
+	material_->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
+
+	RT_ASSERT(mesh_instance_ != nullptr, "_create_debug_objects: mesh_instance_ must be valid");
+	RT_ASSERT(mesh_.is_valid(), "_create_debug_objects: mesh must be valid");
+	RT_ASSERT(material_.is_valid(), "_create_debug_objects: material must be valid");
+}
+
+void RayTracerDebug::_destroy_debug_objects() {
+	// Precondition: if mesh_instance_ is set, it must still be our child.
+	RT_ASSERT(mesh_instance_ == nullptr || mesh_instance_->get_parent() == this,
+		"_destroy_debug_objects: mesh_instance_ parent mismatch");
+
+	if (mesh_instance_ != nullptr) {
+		// Remove the child and free it so no dangling pointer persists.
+		remove_child(mesh_instance_);
+		memdelete(mesh_instance_);
+		mesh_instance_ = nullptr;
 	}
 
-	if (mesh_.is_null()) {
-		mesh_.instantiate();
-		mesh_instance_->set_mesh(mesh_);
-	}
+	// Release Ref<> resources.  They are reference-counted and may still be
+	// alive if something else holds a ref, but we are done with them.
+	mesh_.unref();
+	material_.unref();
 
-	if (material_.is_null()) {
-		material_.instantiate();
-		material_->set_shading_mode(BaseMaterial3D::SHADING_MODE_UNSHADED);
-		material_->set_flag(BaseMaterial3D::FLAG_ALBEDO_FROM_VERTEX_COLOR, true);
-		material_->set_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
-		material_->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
-	}
-
-	RT_ASSERT(mesh_instance_ != nullptr, "_ensure_debug_objects: mesh_instance must be valid");
-	RT_ASSERT(mesh_.is_valid(), "_ensure_debug_objects: mesh must be valid");
+	RT_ASSERT(mesh_instance_ == nullptr, "_destroy_debug_objects: pointer must be null");
 }
 
 // ============================================================================
 // Individual draw mode implementations
 // ============================================================================
 
-// Mode 0: DRAW_RAYS -- classic green/red/yellow/cyan
+// Mode 0: DRAW_RAYS — classic green/red/yellow/cyan
 void RayTracerDebug::_draw_ray_classic(const Ray &r, const Intersection &hit) {
 	RT_ASSERT(mesh_.is_valid(), "_draw_ray_classic: mesh must be valid");
 	RT_ASSERT_POSITIVE(ray_miss_length_);
 
 	if (hit.hit()) {
-		// Green line: origin -> hit
+		// Green line: origin → hit
 		mesh_->surface_set_color(Color(0.0, 1.0, 0.0, 0.8));
 		mesh_->surface_add_vertex(r.origin);
 		mesh_->surface_set_color(Color(0.0, 1.0, 0.0, 0.4));
@@ -163,7 +209,7 @@ void RayTracerDebug::_draw_ray_classic(const Ray &r, const Intersection &hit) {
 	}
 }
 
-// Mode 1: DRAW_NORMALS -- color rays by surface normal (RGB = XYZ mapped 0..1)
+// Mode 1: DRAW_NORMALS — color rays by surface normal (RGB = XYZ mapped 0..1)
 void RayTracerDebug::_draw_ray_normals(const Ray &r, const Intersection &hit) {
 	RT_ASSERT(mesh_.is_valid(), "_draw_ray_normals: mesh must be valid");
 	RT_ASSERT_POSITIVE(ray_miss_length_);
@@ -192,7 +238,7 @@ void RayTracerDebug::_draw_ray_normals(const Ray &r, const Intersection &hit) {
 	}
 }
 
-// Mode 2: DRAW_DISTANCE -- distance heatmap (close=white, far=red, very far=dark)
+// Mode 2: DRAW_DISTANCE — distance heatmap (close=white, far=red, very far=dark)
 void RayTracerDebug::_draw_ray_distance(const Ray &r, const Intersection &hit) {
 	RT_ASSERT(mesh_.is_valid(), "_draw_ray_distance: mesh must be valid");
 	RT_ASSERT_POSITIVE(heatmap_max_distance_);
@@ -201,6 +247,7 @@ void RayTracerDebug::_draw_ray_distance(const Ray &r, const Intersection &hit) {
 		float t_norm = hit.t / heatmap_max_distance_;
 		if (t_norm > 1.0f) { t_norm = 1.0f; }
 
+		// Three-band gradient: white → yellow → red → dark red.
 		Color c;
 		if (t_norm < 0.33f) {
 			float f = t_norm / 0.33f;
@@ -225,9 +272,13 @@ void RayTracerDebug::_draw_ray_distance(const Ray &r, const Intersection &hit) {
 	}
 }
 
-// Mode 3 & 4: DRAW_HEATMAP / DRAW_OVERHEAT -- color by triangle test count
+// Mode 3 & 4: DRAW_HEATMAP / DRAW_OVERHEAT — color by triangle test count
 void RayTracerDebug::_draw_ray_heatmap(const Ray &r, const Intersection &hit,
 		int tri_test_count) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_ray_heatmap: mesh must be valid");
+	RT_ASSERT_POSITIVE(heatmap_max_cost_);
+
+	// Four-band gradient (blue → cyan → green → yellow → red).
 	float cost = static_cast<float>(tri_test_count) / static_cast<float>(heatmap_max_cost_);
 	if (cost > 1.0f) { cost = 1.0f; }
 
@@ -246,6 +297,7 @@ void RayTracerDebug::_draw_ray_heatmap(const Ray &r, const Intersection &hit,
 		c = Color(1.0, 1.0 - f, 0.0, 0.8);
 	}
 
+	// Overheat: magenta highlight for rays that exceed the cost threshold.
 	if (draw_mode_ == DRAW_OVERHEAT && tri_test_count > heatmap_max_cost_) {
 		c = Color(1.0, 0.0, 1.0, 1.0);
 	}
@@ -263,7 +315,7 @@ void RayTracerDebug::_draw_ray_heatmap(const Ray &r, const Intersection &hit,
 	}
 }
 
-// Mode 6: DRAW_LAYERS -- color rays by which visibility layer the hit triangle is on.
+// Mode 6: DRAW_LAYERS — color rays by the visibility layer of the hit triangle.
 // Each of the 20 Godot render layers gets a distinct hue so you can visually
 // verify which geometry is assigned to which layer.
 void RayTracerDebug::_draw_ray_layers(const Ray &r, const Intersection &hit) {
@@ -271,11 +323,10 @@ void RayTracerDebug::_draw_ray_layers(const Ray &r, const Intersection &hit) {
 	RT_ASSERT_POSITIVE(hit_marker_size_);
 
 	if (hit.hit()) {
-		// Find the lowest set bit in hit_layers to pick a deterministic color.
+		// Find the lowest set bit to pick a deterministic color.
 		uint32_t mask = hit.hit_layers;
 		int layer_idx = 0;
 		if (mask != 0) {
-			// Bit scan: find lowest set bit index (0-based).
 			while ((mask & 1u) == 0) {
 				mask >>= 1;
 				layer_idx++;
@@ -301,7 +352,6 @@ void RayTracerDebug::_draw_ray_layers(const Ray &r, const Intersection &hit) {
 		mesh_->surface_set_color(c);
 		mesh_->surface_add_vertex(hit.position + Vector3(0, s, 0));
 	} else {
-		// Miss: dim grey.
 		mesh_->surface_set_color(Color(0.3, 0.3, 0.3, 0.1));
 		mesh_->surface_add_vertex(r.origin);
 		mesh_->surface_set_color(Color(0.3, 0.3, 0.3, 0.03));
@@ -310,12 +360,13 @@ void RayTracerDebug::_draw_ray_layers(const Ray &r, const Intersection &hit) {
 }
 
 // ============================================================================
-// Debug ray dispatch
+// Draw dispatch — routes to the correct mode handler
 // ============================================================================
 
 void RayTracerDebug::_draw_debug_ray(const Ray &r, const Intersection &hit, int ray_index) {
 	RT_ASSERT(mesh_.is_valid(), "_draw_debug_ray: mesh must be valid");
-	RT_ASSERT(draw_mode_ >= DRAW_RAYS && draw_mode_ <= DRAW_LAYERS, "_draw_debug_ray: invalid draw mode");
+	RT_ASSERT(draw_mode_ >= DRAW_RAYS && draw_mode_ <= DRAW_LAYERS,
+		"_draw_debug_ray: invalid draw mode");
 
 	switch (draw_mode_) {
 		case DRAW_RAYS:
@@ -339,6 +390,7 @@ void RayTracerDebug::_draw_debug_ray(const Ray &r, const Intersection &hit, int 
 		}
 
 		case DRAW_BVH:
+			// In BVH mode, still draw faint rays to show coverage.
 			if (hit.hit()) {
 				mesh_->surface_set_color(Color(1.0, 1.0, 1.0, 0.15));
 				mesh_->surface_add_vertex(r.origin);
@@ -349,6 +401,10 @@ void RayTracerDebug::_draw_debug_ray(const Ray &r, const Intersection &hit, int 
 
 		case DRAW_LAYERS:
 			_draw_ray_layers(r, hit);
+			break;
+
+		default:
+			RT_UNREACHABLE("_draw_debug_ray: unhandled draw mode");
 			break;
 	}
 }
@@ -365,6 +421,7 @@ void RayTracerDebug::_draw_aabb_wireframe(const godot::AABB &box, const Color &c
 	Vector3 p = box.position;
 	Vector3 s = box.size;
 
+	// 8 corners of the axis-aligned box.
 	Vector3 corners[8] = {
 		p,
 		p + Vector3(s.x, 0, 0),
@@ -376,10 +433,11 @@ void RayTracerDebug::_draw_aabb_wireframe(const godot::AABB &box, const Color &c
 		p + Vector3(0, s.y, s.z),
 	};
 
+	// 12 edges connecting the corners.
 	static const int edges[12][2] = {
-		{0,1}, {1,2}, {2,3}, {3,0},
-		{4,5}, {5,6}, {6,7}, {7,4},
-		{0,4}, {1,5}, {2,6}, {3,7},
+		{0,1}, {1,2}, {2,3}, {3,0},   // bottom face
+		{4,5}, {5,6}, {6,7}, {7,4},   // top face
+		{0,4}, {1,5}, {2,6}, {3,7},   // vertical pillars
 	};
 
 	for (int e = 0; e < 12; e++) {
@@ -396,7 +454,7 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 
 	const auto &sc = server->scene();
 	if (!sc.use_bvh || !sc.bvh.is_built()) {
-		UtilityFunctions::print("[RayTracerDebug] BVH not built -- nothing to draw");
+		UtilityFunctions::print("[RayTracerDebug] BVH not built — nothing to draw");
 		return;
 	}
 
@@ -408,6 +466,7 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 
 	int target_depth = bvh_depth_;
 
+	// Color-code by depth: each level gets a different hue.
 	auto depth_color = [](int depth) -> Color {
 		float hue = std::fmod(depth * 0.15f, 1.0f);
 		return Color::from_hsv(hue, 0.8f, 1.0f, 0.5f);
@@ -432,6 +491,7 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 
 		if (depth > max_observed_depth) { max_observed_depth = depth; }
 
+		// target_depth == -1 means "draw leaf nodes only".
 		if (target_depth == -1) {
 			if (node.is_leaf()) {
 				_draw_aabb_wireframe(node.bounds, depth_color(depth));
@@ -440,7 +500,7 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 		} else if (depth == target_depth) {
 			_draw_aabb_wireframe(node.bounds, depth_color(depth));
 			boxes_drawn++;
-			continue;
+			continue;   // Don't descend past target depth.
 		}
 
 		if (!node.is_leaf()) {
@@ -459,7 +519,7 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 }
 
 // ============================================================================
-// cast_debug_rays -- the main debug entry point
+// cast_debug_rays — the main entry point
 // ============================================================================
 
 void RayTracerDebug::cast_debug_rays(const Vector3 &origin, const Vector3 &forward,
@@ -467,19 +527,30 @@ void RayTracerDebug::cast_debug_rays(const Vector3 &origin, const Vector3 &forwa
 	RT_ASSERT(grid_w > 0 && grid_h > 0, "Debug ray grid dimensions must be positive");
 	RT_ASSERT(fov_degrees > 0.0f && fov_degrees < 180.0f, "FOV must be in (0, 180) degrees");
 
+	// ---- Early-out guards ----
+	// Skip computation when disabled, not in tree, or not visible.
+	// This directly fixes the "debug renderer calculated when not visible" bug.
 	if (!debug_enabled_) { return; }
+	if (!is_inside_tree()) { return; }
+	if (!is_visible_in_tree()) { return; }
 
 	RayTracerServer *server = RayTracerServer::get_singleton();
 	if (!server) {
-		UtilityFunctions::print("[RayTracerDebug] Server not available");
+		WARN_PRINT_ONCE("[RayTracerDebug] RayTracerServer not available");
 		return;
 	}
 
-	_ensure_debug_objects();
+	// Ensure drawing objects exist (they should already from ENTER_TREE,
+	// but guard against calls before the node has entered the tree).
+	if (mesh_instance_ == nullptr || mesh_.is_null() || material_.is_null()) {
+		WARN_PRINT_ONCE("[RayTracerDebug] Debug objects not ready — is node in the tree?");
+		return;
+	}
+
 	mesh_->clear_surfaces();
 	mesh_->surface_begin(Mesh::PRIMITIVE_LINES, material_);
 
-	// BVH wireframe mode
+	// BVH wireframe mode — draw boxes before rays.
 	if (draw_mode_ == DRAW_BVH) {
 		_draw_bvh_wireframe();
 	}
@@ -520,7 +591,7 @@ void RayTracerDebug::cast_debug_rays(const Vector3 &origin, const Vector3 &forwa
 	auto t0 = std::chrono::high_resolution_clock::now();
 
 	if (need_per_ray_cost && !used_gpu) {
-		// CPU per-ray stats: cast individually for per-ray cost.
+		// CPU per-ray stats: cast individually for per-ray cost tracking.
 		per_ray_tri_tests_.resize(total_rays);
 		const auto &scene = server->scene();
 		uint32_t qmask = static_cast<uint32_t>(layer_mask_);
@@ -537,7 +608,7 @@ void RayTracerDebug::cast_debug_rays(const Vector3 &origin, const Vector3 &forwa
 			static_cast<uint32_t>(layer_mask_));
 
 		if (need_per_ray_cost) {
-			// GPU doesn't have per-ray cost. Approximate by averaging.
+			// GPU doesn't provide per-ray cost — approximate by averaging.
 			per_ray_tri_tests_.resize(total_rays);
 			int avg = (last_stats_.rays_cast > 0)
 				? static_cast<int>(last_stats_.tri_tests / last_stats_.rays_cast) : 0;
@@ -560,24 +631,27 @@ void RayTracerDebug::cast_debug_rays(const Vector3 &origin, const Vector3 &forwa
 	mesh_->surface_end();
 
 	// ---- 4. Print performance summary ----
-	const char *mode_names[] = { "Rays", "Normals", "Distance", "Heatmap", "Overheat", "BVH", "Layers" };
-	const char *mode_name = mode_names[static_cast<int>(draw_mode_)];
+	static const char *MODE_NAMES[] = {
+		"Rays", "Normals", "Distance", "Heatmap", "Overheat", "BVH", "Layers"
+	};
+	RT_ASSERT(static_cast<int>(draw_mode_) < 7, "draw_mode_ out of range for MODE_NAMES");
+	const char *mode_name = MODE_NAMES[static_cast<int>(draw_mode_)];
 
-	char buf[512];
 	if (used_gpu) {
-		std::snprintf(buf, sizeof(buf),
-			"[RayTracerDebug] GPU [%s]: Cast %d rays -- %d hits (%.1f%%) in %.3f ms",
-			mode_name, total_rays, hit_count,
-			total_rays > 0 ? 100.0f * hit_count / total_rays : 0.0f,
-			last_cast_ms_);
+		UtilityFunctions::print(
+			"[RayTracerDebug] GPU [", mode_name, "]: Cast ", total_rays,
+			" rays — ", hit_count, " hits (",
+			String::num(total_rays > 0 ? 100.0f * hit_count / total_rays : 0.0f, 1),
+			"%) in ", String::num(last_cast_ms_, 3), " ms");
 	} else {
-		std::snprintf(buf, sizeof(buf),
-			"[RayTracerDebug] CPU [%s]: Cast %d rays -- %d hits (%.1f%%) | %.1f tri/ray, %.1f nodes/ray | %.3f ms",
-			mode_name, total_rays, hit_count, last_stats_.hit_rate_percent(),
-			last_stats_.avg_tri_tests_per_ray(), last_stats_.avg_nodes_per_ray(),
-			last_cast_ms_);
+		UtilityFunctions::print(
+			"[RayTracerDebug] CPU [", mode_name, "]: Cast ", total_rays,
+			" rays — ", hit_count, " hits (",
+			String::num(last_stats_.hit_rate_percent(), 1),
+			"%) | ", String::num(last_stats_.avg_tri_tests_per_ray(), 1),
+			" tri/ray, ", String::num(last_stats_.avg_nodes_per_ray(), 1),
+			" nodes/ray | ", String::num(last_cast_ms_, 3), " ms");
 	}
-	UtilityFunctions::print(buf);
 }
 
 void RayTracerDebug::clear_debug() {
@@ -594,25 +668,41 @@ void RayTracerDebug::set_debug_enabled(bool enabled) { debug_enabled_ = enabled;
 bool RayTracerDebug::get_debug_enabled() const { return debug_enabled_; }
 
 void RayTracerDebug::set_draw_mode(int mode) {
+	RT_ASSERT(mode >= 0, "set_draw_mode: mode must be >= 0");
 	if (mode >= 0 && mode <= static_cast<int>(DRAW_LAYERS)) {
 		draw_mode_ = static_cast<DebugDrawMode>(mode);
 	}
 }
 int RayTracerDebug::get_draw_mode() const { return static_cast<int>(draw_mode_); }
 
-void RayTracerDebug::set_ray_miss_length(float length) { ray_miss_length_ = length; }
+void RayTracerDebug::set_ray_miss_length(float length) {
+	RT_ASSERT(length > 0.0f, "set_ray_miss_length: length must be positive");
+	ray_miss_length_ = length > 0.0f ? length : 0.1f;
+}
 float RayTracerDebug::get_ray_miss_length() const { return ray_miss_length_; }
 
-void RayTracerDebug::set_normal_length(float length) { normal_length_ = length; }
+void RayTracerDebug::set_normal_length(float length) {
+	RT_ASSERT(length > 0.0f, "set_normal_length: length must be positive");
+	normal_length_ = length > 0.0f ? length : 0.01f;
+}
 float RayTracerDebug::get_normal_length() const { return normal_length_; }
 
-void RayTracerDebug::set_heatmap_max_distance(float dist) { heatmap_max_distance_ = dist; }
+void RayTracerDebug::set_heatmap_max_distance(float dist) {
+	RT_ASSERT(dist > 0.0f, "set_heatmap_max_distance: distance must be positive");
+	heatmap_max_distance_ = dist > 0.0f ? dist : 1.0f;
+}
 float RayTracerDebug::get_heatmap_max_distance() const { return heatmap_max_distance_; }
 
-void RayTracerDebug::set_heatmap_max_cost(int cost) { heatmap_max_cost_ = cost > 0 ? cost : 1; }
+void RayTracerDebug::set_heatmap_max_cost(int cost) {
+	RT_ASSERT(cost > 0, "set_heatmap_max_cost: cost must be positive");
+	heatmap_max_cost_ = cost > 0 ? cost : 1;
+}
 int RayTracerDebug::get_heatmap_max_cost() const { return heatmap_max_cost_; }
 
-void RayTracerDebug::set_bvh_depth(int depth) { bvh_depth_ = depth; }
+void RayTracerDebug::set_bvh_depth(int depth) {
+	RT_ASSERT(depth >= -1, "set_bvh_depth: depth must be >= -1");
+	bvh_depth_ = depth;
+}
 int RayTracerDebug::get_bvh_depth() const { return bvh_depth_; }
 
 void RayTracerDebug::set_layer_mask(int mask) { layer_mask_ = mask; }

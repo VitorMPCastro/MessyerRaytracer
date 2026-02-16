@@ -11,6 +11,12 @@
 #include <godot_cpp/core/class_db.hpp>
 
 #include "api/ray_service.h"
+// NOTE: accel/ray_scene.h is included here despite the module decoupling rule
+// (modules should only include api/ and core/). This is a justified exception:
+// RTCompositorBase must upload BVH node data and triangle data to the GPU, which
+// requires direct access to the BVH data structures. Abstracting this behind
+// IRayService would add an unnecessary indirection layer with no benefit —
+// the GPU upload is inherently tied to the concrete BVH layout.
 #include "accel/ray_scene.h"
 #include "core/triangle.h"
 #include "core/asserts.h"

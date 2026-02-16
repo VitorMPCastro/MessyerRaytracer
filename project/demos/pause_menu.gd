@@ -62,11 +62,7 @@ var _gpu_label: Label
 # Renderer controls
 var _channel_btn: OptionButton
 var _res_btn: OptionButton
-var _depth_spin: SpinBox
 var _pos_spin: SpinBox
-var _sun_x_spin: SpinBox
-var _sun_y_spin: SpinBox
-var _sun_z_spin: SpinBox
 var _auto_render_check: CheckBox
 
 # backend / draw mode name arrays
@@ -222,14 +218,6 @@ func _build_ui() -> void:
 		_res_btn.item_selected.connect(_on_resolution_changed)
 		res_row.add_child(_res_btn)
 
-		# Depth range
-		var depth_row := _make_row("Depth Range")
-		vbox.add_child(depth_row)
-		_depth_spin = _make_spin(1.0, 10000.0, renderer_node.depth_range, 5.0)
-		_depth_spin.value_changed.connect(func(v: float):
-			renderer_node.depth_range = v; _fire_cast())
-		depth_row.add_child(_depth_spin)
-
 		# Position range
 		var pos_row := _make_row("Pos. Range")
 		vbox.add_child(pos_row)
@@ -237,22 +225,6 @@ func _build_ui() -> void:
 		_pos_spin.value_changed.connect(func(v: float):
 			renderer_node.position_range = v; _fire_cast())
 		pos_row.add_child(_pos_spin)
-
-		# Sun direction XYZ
-		var sun_label := Label.new()
-		sun_label.text = "Sun Direction"
-		sun_label.add_theme_font_size_override("font_size", 13)
-		vbox.add_child(sun_label)
-		var sun_row := HBoxContainer.new()
-		sun_row.add_theme_constant_override("separation", 4)
-		vbox.add_child(sun_row)
-		var sun_dir: Vector3 = renderer_node.sun_direction
-		_sun_x_spin = _make_spin(-1.0, 1.0, sun_dir.x, 0.05)
-		_sun_y_spin = _make_spin(-1.0, 1.0, sun_dir.y, 0.05)
-		_sun_z_spin = _make_spin(-1.0, 1.0, sun_dir.z, 0.05)
-		for s: SpinBox in [_sun_x_spin, _sun_y_spin, _sun_z_spin]:
-			s.value_changed.connect(func(_v: float): _on_sun_changed())
-			sun_row.add_child(s)
 
 		# Auto-render toggle
 		_auto_render_check = CheckBox.new()
@@ -463,14 +435,6 @@ func _on_channel_changed(idx: int) -> void:
 func _on_resolution_changed(idx: int) -> void:
 	if renderer_node and idx >= 0 and idx < _res_presets.size():
 		renderer_node.resolution = _res_presets[idx]
-	_fire_cast()
-
-
-func _on_sun_changed() -> void:
-	if renderer_node and _sun_x_spin and _sun_y_spin and _sun_z_spin:
-		var d := Vector3(_sun_x_spin.value, _sun_y_spin.value, _sun_z_spin.value)
-		if d.length_squared() > 0.001:
-			renderer_node.sun_direction = d.normalized()
 	_fire_cast()
 
 

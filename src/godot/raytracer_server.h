@@ -31,6 +31,7 @@
 #include "core/stats.h"
 #include "core/material_data.h"
 #include "core/triangle_uv.h"
+#include "core/triangle_normals.h"
 
 #include <vector>
 #include <cstdint>
@@ -59,6 +60,7 @@ private:
 		std::vector<MaterialData> object_materials;   // Per-surface materials
 		std::vector<uint32_t> object_material_ids;    // Per-triangle material index (into object_materials)
 		std::vector<TriangleUV> object_triangle_uvs;  // Per-triangle UV coordinates
+		std::vector<TriangleNormals> object_triangle_normals; // Per-vertex smooth normals
 		uint32_t layer_mask = 0xFFFFFFFF;      // Godot VisualInstance3D.layers bitmask
 		bool valid = false;
 	};
@@ -73,6 +75,7 @@ private:
 	std::vector<MaterialData> scene_materials_;
 	std::vector<uint32_t> scene_material_ids_;
 	std::vector<TriangleUV> scene_triangle_uvs_;
+	std::vector<TriangleNormals> scene_triangle_normals_;
 
 	// ---- Backend ----
 	BackendMode backend_mode_ = BACKEND_CPU;
@@ -91,7 +94,8 @@ private:
 		std::vector<Triangle> &out_tris,
 		std::vector<MaterialData> &out_materials,
 		std::vector<uint32_t> &out_material_ids,
-		std::vector<TriangleUV> &out_uvs);
+		std::vector<TriangleUV> &out_uvs,
+		std::vector<TriangleNormals> &out_normals);
 	void _rebuild_scene();
 
 protected:

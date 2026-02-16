@@ -76,24 +76,6 @@ popup/item_5/id = 5
 [node name="Sep1" type="HSeparator" parent="."]
 layout_mode = 2
 
-[node name="DepthRow" type="HBoxContainer" parent="."]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="Label" type="Label" parent="DepthRow"]
-custom_minimum_size = Vector2(120, 0)
-layout_mode = 2
-text = "Depth Range"
-
-[node name="DepthSpin" type="SpinBox" parent="DepthRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-min_value = 1.0
-max_value = 10000.0
-step = 5.0
-value = 100.0
-
 [node name="PosRow" type="HBoxContainer" parent="."]
 layout_mode = 2
 theme_override_constants/separation = 8
@@ -115,41 +97,35 @@ value = 10.0
 [node name="Sep2" type="HSeparator" parent="."]
 layout_mode = 2
 
-[node name="SunLabel" type="Label" parent="."]
+[node name="ShadowsCheck" type="CheckBox" parent="."]
+unique_name_in_owner = true
 layout_mode = 2
-theme_override_font_sizes/font_size = 13
-text = "Sun Direction"
+button_pressed = true
+text = "Shadows Enabled"
 
-[node name="SunRow" type="HBoxContainer" parent="."]
+[node name="AACheck" type="CheckBox" parent="."]
+unique_name_in_owner = true
 layout_mode = 2
-theme_override_constants/separation = 4
+button_pressed = true
+text = "Anti-Aliasing (AA)"
 
-[node name="SunX" type="SpinBox" parent="SunRow"]
+[node name="AARow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="AARow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "AA Max Samples"
+
+[node name="AASpin" type="SpinBox" parent="AARow"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_horizontal = 3
-min_value = -1.0
-max_value = 1.0
-step = 0.05
-value = 0.5
-
-[node name="SunY" type="SpinBox" parent="SunRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-min_value = -1.0
-max_value = 1.0
-step = 0.05
-value = 0.8
-
-[node name="SunZ" type="SpinBox" parent="SunRow"]
-unique_name_in_owner = true
-layout_mode = 2
-size_flags_horizontal = 3
-min_value = -1.0
-max_value = 1.0
-step = 0.05
-value = 0.3
+min_value = 1.0
+max_value = 4096.0
+step = 16.0
+value = 256.0
 
 [node name="Sep3" type="HSeparator" parent="."]
 layout_mode = 2

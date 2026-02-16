@@ -99,6 +99,12 @@ public:
 		// Calling thread processes chunk 0
 		int start = 0;
 		int end = std::min(chunk_size, count);
+		// EXCEPTION SAFETY: try/catch is intentionally kept here despite our no-exceptions rule.
+		// WHY: Worker lambdas interact with Godot arrays and user-provided data. If a lambda
+		// throws (e.g., assertion-to-exception on some platforms, or undefined behavior in
+		// third-party code), raw thread termination without catch would deadlock the pool
+		// (pending_chunks_ never reaches 0) and freeze the entire editor. The catch logs the
+		// error through ERR_PRINT (visible in the Godot Output panel) and lets the pool drain.
 		try {
 			func(start, end);
 		} catch (const std::exception &e) {
@@ -161,6 +167,7 @@ private:
 				if (start >= work_total_) { break; }
 				int end = std::min(start + work_chunk_size_, work_total_);
 
+				// See dispatch_and_wait for WHY try/catch is justified here.
 				try {
 					(*work_func_)(start, end);
 				} catch (const std::exception &e) {

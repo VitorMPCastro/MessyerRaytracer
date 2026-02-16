@@ -1,7 +1,5 @@
-#ifndef EXAMPLE_REGISTER_TYPES_H
-#define EXAMPLE_REGISTER_TYPES_H
+#pragma once
+// register_types.h — GDExtension entry points for type registration.
 
 void initialize_gdextension_types();
 void uninitialize_gdextension_types();
-
-#endif // EXAMPLE_REGISTER_TYPES_H

@@ -1,21 +1,38 @@
 #pragma once
-// raytracer_debug.h -- Debug visualization node for ray tracing.
+// raytracer_debug.h — Debug visualization node for ray tracing.
 //
-// RayTracerDebug draws ray intersections and BVH wireframes using ImmediateMesh.
-// It queries RayTracerServer for dispatch and scene data.
+// WHAT:  Draws debug ray visualizations (intersections, normals, heatmaps, BVH
+//        wireframes) using ImmediateMesh, querying RayTracerServer for scene data.
 //
-// DEBUG DRAW MODES:
-//   0 = DRAW_RAYS     -- Green=hit, Red=miss, Yellow cross=hitpoint, Cyan=normal
-//   1 = DRAW_NORMALS  -- Rays colored by surface normal direction (RGB = XYZ)
-//   2 = DRAW_DISTANCE -- Heatmap: close=white -> far=red -> very far=dark red
-//   3 = DRAW_HEATMAP  -- Tri-test heatmap: few tests=blue -> many tests=red
-//   4 = DRAW_OVERHEAT -- Like HEATMAP but highlights expensive rays (>threshold)
-//   5 = DRAW_BVH      -- Wireframe of BVH bounding boxes at a chosen depth level
-//   6 = DRAW_LAYERS   -- Color rays by which visibility layer the hit triangle belongs to
+// WHY:   Visual verification of BVH quality, ray coverage, traversal cost, and
+//        layer assignments.  Essential for profiling and diagnosing ray tracing
+//        issues without a full render pipeline.
 //
-// USAGE:
-//   Add a RayTracerDebug node to the scene.
-//   Call cast_debug_rays(origin, forward, grid_w, grid_h, fov_degrees).
+// HOW:   cast_debug_rays() generates a camera-ray grid, dispatches via
+//        RayTracerServer::cast_rays_batch(), then draws per-ray geometry into an
+//        ImmediateMesh in the selected draw mode.  The MeshInstance3D child is
+//        created on ENTER_TREE and destroyed on EXIT_TREE to guarantee a clean
+//        lifecycle — no dangling pointers, no stale GPU resources.
+//
+// WHY NOT draw directly with RenderingServer?
+//   ImmediateMesh is simpler, well-suited for debug line geometry, and integrates
+//   with Godot's scene tree visibility (show/hide in editor, toggle via script).
+//   RenderingServer would be faster for massive line counts but adds complexity
+//   that isn't justified for a debug tool.
+//
+// DRAW MODES:
+//   0 = DRAW_RAYS     — Green=hit, Red=miss, Yellow cross=hitpoint, Cyan=normal
+//   1 = DRAW_NORMALS  — Rays colored by surface normal direction (RGB = XYZ)
+//   2 = DRAW_DISTANCE — Heatmap: close=white → far=red → very far=dark red
+//   3 = DRAW_HEATMAP  — Tri-test heatmap: few tests=blue → many tests=red
+//   4 = DRAW_OVERHEAT — Like HEATMAP but highlights expensive rays (>threshold)
+//   5 = DRAW_BVH      — Wireframe of BVH bounding boxes at a chosen depth level
+//   6 = DRAW_LAYERS   — Color rays by which visibility layer the hit triangle is on
+//
+// USAGE (GDScript):
+//   var debug := $RayTracerDebug
+//   debug.debug_draw_mode = RayTracerDebug.DRAW_NORMALS
+//   debug.cast_debug_rays(cam.global_position, -cam.global_basis.z, 32, 24, cam.fov)
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/mesh_instance3d.hpp>
@@ -60,19 +77,29 @@ private:
 	int layer_mask_ = 0x7FFFFFFF;
 
 	// ---- Godot objects for drawing ----
+	// Owned as a scene-tree child — created on ENTER_TREE, destroyed on EXIT_TREE.
+	// The pointer is ONLY valid between those two notifications.
 	MeshInstance3D *mesh_instance_ = nullptr;
 	Ref<ImmediateMesh> mesh_;
 	Ref<StandardMaterial3D> material_;
 
-	// ---- Per-ray heatmap data ----
+	// ---- Per-ray heatmap data (reused across frames) ----
 	std::vector<int> per_ray_tri_tests_;
 
 	// ---- Stats from last debug cast ----
 	RayStats last_stats_;
 	float last_cast_ms_ = 0.0f;
 
+	// ---- Lifecycle helpers ----
+	// Create the MeshInstance3D child, ImmediateMesh, and material.
+	// Called on NOTIFICATION_ENTER_TREE.
+	void _create_debug_objects();
+
+	// Remove and free the MeshInstance3D child, release refs.
+	// Called on NOTIFICATION_EXIT_TREE.
+	void _destroy_debug_objects();
+
 	// ---- Internal drawing helpers ----
-	void _ensure_debug_objects();
 	void _draw_debug_ray(const Ray &r, const Intersection &hit, int ray_index);
 	void _draw_ray_classic(const Ray &r, const Intersection &hit);
 	void _draw_ray_normals(const Ray &r, const Intersection &hit);
@@ -86,12 +113,18 @@ protected:
 	static void _bind_methods();
 
 public:
+	// Non-copyable — owns a MeshInstance3D child node.
+	// GDCLASS already deletes copy constructor and defines operator= (void return).
 	RayTracerDebug() = default;
 	~RayTracerDebug() = default;
+
+	// Godot lifecycle (ENTER_TREE, EXIT_TREE, VISIBILITY_CHANGED).
+	void _notification(int p_what);
 
 	// ---- Main API ----
 
 	// Cast a grid of debug rays and visualize the results.
+	// No-op when not in tree, not visible, or debug_enabled is false.
 	void cast_debug_rays(const Vector3 &origin, const Vector3 &forward,
 		int grid_w, int grid_h, float fov_degrees);
 

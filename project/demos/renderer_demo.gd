@@ -2,16 +2,26 @@
 #
 # This demo shows how to use RayRenderer to produce actual rendered images
 # from ray tracing. A TextureRect displays the output, and you can cycle
-# through all 7 AOV channels with TAB.
+# through all 11 AOV channels with TAB.
 #
-# SETUP (auto-created by script):
+# Phase 1 features demonstrated:
+#   - Cook-Torrance PBR (metallic sphere, colored materials)
+#   - Smooth vertex normals (interpolated per-hit)
+#   - Shadow rays (hard shadows from DirectionalLight3D)
+#   - Sky gradient from WorldEnvironment → ProceduralSkyMaterial
+#   - Tone mapping (ACES) from Environment settings
+#   - Anti-aliasing (jittered sub-pixel + temporal accumulation)
+#
+# SETUP:
 #   Node3D (this script)
-#   ├── Camera3D          <-- FPS camera with mouse look
-#   ├── RayRenderer       <-- traces rays, produces image
+#   ├── Camera3D            <-- FPS camera with mouse look
+#   ├── RayRenderer         <-- traces rays, produces image
+#   ├── DirectionalLight3D  <-- sun (direction, color, energy read per frame)
+#   ├── WorldEnvironment    <-- sky, ambient, tone mapping (read per frame)
 #   ├── CanvasLayer
-#   │   ├── TextureRect   <-- displays the rendered image
-#   │   └── Label         <-- HUD showing stats
-#   └── MeshInstance3D... <-- scene geometry
+#   │   ├── TextureRect     <-- displays the rendered image
+#   │   └── Label           <-- HUD showing stats
+#   └── MeshInstance3D...   <-- scene geometry
 #
 # CONTROLS:
 #   WASD / Arrow keys — move forward/back/left/right
@@ -23,6 +33,8 @@
 #   B                 — cycle backend (CPU/GPU/Auto)
 #   F                 — toggle auto-render (freeze)
 #   +/-               — increase/decrease resolution
+#   L                 — toggle shadows
+#   J                 — toggle anti-aliasing
 #   ESC / P           — open settings menu
 #   F1                — toggle keyboard hints
 
@@ -71,7 +83,7 @@ func _ready() -> void:
 	add_child(menu)
 
 	tooltip = preload("res://demos/ui/tooltip_overlay.tscn").instantiate()
-	tooltip.hint_text = "[Renderer Demo]\nWASD / Arrows — Move camera\nMouse — Look around\nQ / E — Down / Up\n\n1-7 — Select channel directly\nTAB — Cycle channel\nR — Render one frame\nB — Cycle backend\nF — Toggle auto-render\n+/- — Change resolution\n\nESC / P — Settings menu\nF1 — Toggle this help"
+	tooltip.hint_text = "[Renderer Demo]\nWASD / Arrows — Move camera\nMouse — Look around\nQ / E — Down / Up\n\n1-7 — Select channel directly\nTAB — Cycle channel\nR — Render one frame\nB — Cycle backend\nF — Toggle auto-render\n+/- — Change resolution\nL — Toggle shadows\nJ — Toggle anti-aliasing\n\nESC / P — Settings menu\nF1 — Toggle this help"
 	add_child(tooltip)
 
 	# ---- Mouse capture ----
@@ -80,8 +92,8 @@ func _ready() -> void:
 
 	print("[RendererDemo] Registered %d meshes, %d triangles" % [count, RayTracerServer.get_triangle_count()])
 	print("Controls: WASD=move, Mouse=look, R=render, TAB=cycle channel, +/-=resolution")
-	print("          1-7=channel, B=backend, F=auto-render toggle, F1=help")
-	print("          ESC / P = settings menu")
+	print("          1-7=channel, B=backend, F=auto-render, L=shadows, J=AA toggle")
+	print("          ESC / P = settings menu, F1=help")
 
 	# Initial render
 	_do_render()
@@ -126,6 +138,16 @@ func _input(event: InputEvent) -> void:
 				renderer_panel.auto_render = not renderer_panel.auto_render
 				renderer_panel.sync_from_node()
 				print("Auto-render: ", "ON" if renderer_panel.auto_render else "OFF")
+			KEY_L:
+				renderer.shadows_enabled = not renderer.shadows_enabled
+				renderer_panel.sync_from_node()
+				print("Shadows: ", "ON" if renderer.shadows_enabled else "OFF")
+				_do_render()
+			KEY_J:
+				renderer.aa_enabled = not renderer.aa_enabled
+				renderer_panel.sync_from_node()
+				print("Anti-Aliasing: ", "ON" if renderer.aa_enabled else "OFF")
+				_do_render()
 			KEY_EQUAL:  # +
 				_change_resolution(1)
 			KEY_MINUS:  # -
@@ -221,8 +243,12 @@ func _update_hud() -> void:
 	var total: float = renderer.get_render_ms()
 	var raygen: float = renderer.get_raygen_ms()
 	var trace: float = renderer.get_trace_ms()
+	var shadow: float = renderer.get_shadow_ms()
 	var shade: float = renderer.get_shade_ms()
 	var conv: float = renderer.get_convert_ms()
-	hud_label.text = "%s  %dx%d  %.1fms (gen:%.1f trace:%.1f shade:%.1f conv:%.1f)" % [
-		ch, res.x, res.y, total, raygen, trace, shade, conv
+	var aa_info := ""
+	if renderer.aa_enabled:
+		aa_info = "  AA:%d/%d" % [renderer.get_accumulation_count(), renderer.aa_max_samples]
+	hud_label.text = "%s  %dx%d  %.1fms (gen:%.1f trace:%.1f shd:%.1f shade:%.1f conv:%.1f)%s" % [
+		ch, res.x, res.y, total, raygen, trace, shadow, shade, conv, aa_info
 	]

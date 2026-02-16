@@ -111,7 +111,9 @@ func _ready() -> void:
 		+ "R — Render frame\n"
 		+ "B — Cycle backend\n"
 		+ "F — Toggle auto-render\n"
-		+ "+/- — Change resolution\n\n"
+		+ "+/- — Change resolution\n"
+		+ "L — Toggle shadows\n"
+		+ "J — Toggle anti-aliasing\n\n"
 		+ "G — Cycle quality preset\n"
 		+ "T — Toggle SSAO\n"
 		+ "Y — Toggle glow\n\n"
@@ -130,7 +132,7 @@ func _ready() -> void:
 		_preset_names[current_preset],
 		"ON" if scene_setup.ssao_enabled else "OFF",
 		"ON" if scene_setup.glow_enabled else "OFF"])
-	print("  Controls: WASD=move, R=render, G=preset, T=SSAO, Y=glow, F1=help")
+	print("  Controls: WASD=move, R=render, G=preset, T=SSAO, Y=glow, L=shadows, J=AA, F1=help")
 
 	# Initial render
 	_do_render()
@@ -171,6 +173,16 @@ func _input(event: InputEvent) -> void:
 			KEY_F:
 				renderer_panel.auto_render = not renderer_panel.auto_render
 				renderer_panel.sync_from_node()
+			KEY_L:
+				renderer.shadows_enabled = not renderer.shadows_enabled
+				renderer_panel.sync_from_node()
+				print("Shadows: ", "ON" if renderer.shadows_enabled else "OFF")
+				_do_render()
+			KEY_J:
+				renderer.aa_enabled = not renderer.aa_enabled
+				renderer_panel.sync_from_node()
+				print("Anti-Aliasing: ", "ON" if renderer.aa_enabled else "OFF")
+				_do_render()
 			KEY_H:
 				tex_rect.visible = not tex_rect.visible
 			KEY_EQUAL:
@@ -277,9 +289,13 @@ func _update_hud() -> void:
 	var total: float = renderer.get_render_ms()
 	var raygen: float = renderer.get_raygen_ms()
 	var trace: float = renderer.get_trace_ms()
+	var shadow: float = renderer.get_shadow_ms()
 	var shade: float = renderer.get_shade_ms()
 	var conv: float = renderer.get_convert_ms()
 	var preset: String = _preset_names[current_preset]
-	hud_label.text = "%s  %dx%d  %.1fms (gen:%.1f trace:%.1f shade:%.1f conv:%.1f)  [%s]" % [
-		ch, res.x, res.y, total, raygen, trace, shade, conv, preset
+	var aa_info := ""
+	if renderer.aa_enabled:
+		aa_info = "  AA:%d/%d" % [renderer.get_accumulation_count(), renderer.aa_max_samples]
+	hud_label.text = "%s  %dx%d  %.1fms (gen:%.1f trace:%.1f shd:%.1f shade:%.1f conv:%.1f)  [%s]%s" % [
+		ch, res.x, res.y, total, raygen, trace, shadow, shade, conv, preset, aa_info
 	]

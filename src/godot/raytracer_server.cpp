@@ -93,7 +93,8 @@ int RayTracerServer::register_mesh(Node *p_node) {
 	std::vector<MaterialData> materials;
 	std::vector<uint32_t> material_ids;
 	std::vector<TriangleUV> uvs;
-	_extract_object_triangles(mesh_inst, tris, materials, material_ids, uvs);
+	std::vector<TriangleNormals> normals;
+	_extract_object_triangles(mesh_inst, tris, materials, material_ids, uvs, normals);
 
 	if (tris.empty()) {
 		ERR_PRINT("[RayTracerServer] register_mesh: mesh has no triangles");
@@ -127,6 +128,7 @@ int RayTracerServer::register_mesh(Node *p_node) {
 	entry.object_materials = std::move(materials);
 	entry.object_material_ids = std::move(material_ids);
 	entry.object_triangle_uvs = std::move(uvs);
+	entry.object_triangle_normals = std::move(normals);
 	entry.layer_mask = mask;
 	entry.valid = true;
 
@@ -347,7 +349,8 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 		std::vector<Triangle> &out_tris,
 		std::vector<MaterialData> &out_materials,
 		std::vector<uint32_t> &out_material_ids,
-		std::vector<TriangleUV> &out_uvs) {
+		std::vector<TriangleUV> &out_uvs,
+		std::vector<TriangleNormals> &out_normals) {
 	RT_ASSERT_NOT_NULL(mesh_inst);
 
 	Ref<Mesh> mesh = mesh_inst->get_mesh();
@@ -375,6 +378,14 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 			tex_uvs = arrays[Mesh::ARRAY_TEX_UV];
 		}
 		bool has_uvs = tex_uvs.size() > 0;
+
+		// ---- Extract vertex normals for this surface ----
+		PackedVector3Array vert_normals;
+		if (arrays.size() > Mesh::ARRAY_NORMAL &&
+				arrays[Mesh::ARRAY_NORMAL].get_type() == Variant::PACKED_VECTOR3_ARRAY) {
+			vert_normals = arrays[Mesh::ARRAY_NORMAL];
+		}
+		bool has_normals = vert_normals.size() > 0;
 
 		// ---- Extract material for this surface ----
 		MaterialData mat;
@@ -428,6 +439,18 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 					tri_uv.uv2 = tex_uvs[indices[i + 2]];
 				}
 				out_uvs.push_back(tri_uv);
+
+				TriangleNormals tri_n;
+				if (has_normals) {
+					tri_n.n0 = vert_normals[indices[i]];
+					tri_n.n1 = vert_normals[indices[i + 1]];
+					tri_n.n2 = vert_normals[indices[i + 2]];
+				} else {
+					// Fallback: use flat face normal for all vertices.
+					Vector3 fn = out_tris.back().normal;
+					tri_n.n0 = tri_n.n1 = tri_n.n2 = fn;
+				}
+				out_normals.push_back(tri_n);
 			}
 		} else {
 			for (int i = 0; i + 2 < vertices.size(); i += 3) {
@@ -444,6 +467,17 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 					tri_uv.uv2 = tex_uvs[i + 2];
 				}
 				out_uvs.push_back(tri_uv);
+
+				TriangleNormals tri_n;
+				if (has_normals) {
+					tri_n.n0 = vert_normals[i];
+					tri_n.n1 = vert_normals[i + 1];
+					tri_n.n2 = vert_normals[i + 2];
+				} else {
+					Vector3 fn = out_tris.back().normal;
+					tri_n.n0 = tri_n.n1 = tri_n.n2 = fn;
+				}
+				out_normals.push_back(tri_n);
 			}
 		}
 	}
@@ -498,6 +532,7 @@ void RayTracerServer::_rebuild_scene() {
 	scene_materials_.clear();
 	scene_material_ids_.clear();
 	scene_triangle_uvs_.clear();
+	scene_triangle_normals_.clear();
 
 	RT_ASSERT(dispatcher_.scene().triangles.empty(),
 		"_rebuild_scene: scene must be empty after clear");
@@ -512,6 +547,7 @@ void RayTracerServer::_rebuild_scene() {
 		uint32_t material_offset;
 		const std::vector<uint32_t> *material_ids;
 		const std::vector<TriangleUV> *triangle_uvs;
+		const std::vector<TriangleNormals> *triangle_normals;
 	};
 	std::vector<BlasInfo> blas_info;
 	uint32_t mat_offset = 0;
@@ -522,6 +558,7 @@ void RayTracerServer::_rebuild_scene() {
 		bi.material_offset = mat_offset;
 		bi.material_ids = &meshes_[i].object_material_ids;
 		bi.triangle_uvs = &meshes_[i].object_triangle_uvs;
+		bi.triangle_normals = &meshes_[i].object_triangle_normals;
 		blas_info.push_back(bi);
 		for (const auto &m : meshes_[i].object_materials) {
 			scene_materials_.push_back(m);
@@ -555,6 +592,24 @@ void RayTracerServer::_rebuild_scene() {
 				uv = (*bi->triangle_uvs)[tri.id];
 			}
 			scene_triangle_uvs_.push_back(uv);
+
+			// Map this flattened triangle to its world-space vertex normals.
+			TriangleNormals tn;
+			if (bi && bi->triangle_normals && tri.id < bi->triangle_normals->size()) {
+				const TriangleNormals &obj_n = (*bi->triangle_normals)[tri.id];
+				// Transform normals by the instance's basis (rotation/scale only).
+				// For non-uniform scale the correct transform is the inverse-transpose,
+				// but uniform scale is the common case and this is close enough.
+				Basis normal_basis = inst.transform.basis;
+				tn.n0 = normal_basis.xform(obj_n.n0).normalized();
+				tn.n1 = normal_basis.xform(obj_n.n1).normalized();
+				tn.n2 = normal_basis.xform(obj_n.n2).normalized();
+			} else {
+				// Fallback: use the world-space face normal.
+				Vector3 fn = world_tri.normal;
+				tn.n0 = tn.n1 = tn.n2 = fn;
+			}
+			scene_triangle_normals_.push_back(tn);
 		}
 	}
 
@@ -580,6 +635,7 @@ SceneShadeData RayTracerServer::get_scene_shade_data() const {
 	data.material_ids   = scene_material_ids_.data();
 	data.triangle_count = static_cast<int>(scene_material_ids_.size());
 	data.triangle_uvs   = scene_triangle_uvs_.data();
+	data.triangle_normals = scene_triangle_normals_.data();
 
 	RT_ASSERT(data.material_count >= 0, "get_scene_shade_data: material_count must be non-negative");
 	RT_ASSERT(data.triangle_count >= 0, "get_scene_shade_data: triangle_count must be non-negative");

@@ -96,6 +96,44 @@ public:
 		}
 	}
 
+	/// Generate a ray for pixel (x, y) with sub-pixel jitter offset.
+	/// jx, jy are offsets in [0, 1) added to the pixel center.
+	/// (0.5, 0.5) = pixel center (same as generate_ray).
+	inline Ray generate_ray_jittered(int x, int y, float jx, float jy) const {
+		RT_ASSERT(x >= 0 && x < width_, "generate_ray_jittered: x out of range");
+		RT_ASSERT(y >= 0 && y < height_, "generate_ray_jittered: y out of range");
+
+		float u = (2.0f * (static_cast<float>(x) + jx) * inv_w_) - 1.0f;
+		float v = 1.0f - (2.0f * (static_cast<float>(y) + jy) * inv_h_);
+
+		if (!is_ortho_) {
+			Vector3 view_dir(u * half_w_, v * half_h_, -1.0f);
+			Vector3 world_dir = basis_.xform(view_dir).normalized();
+			return Ray(origin_, world_dir);
+		} else {
+			Vector3 ray_origin = origin_
+				+ basis_.get_column(0) * (u * ortho_half_w_)
+				+ basis_.get_column(1) * (v * ortho_half_h_);
+			return Ray(ray_origin, forward_);
+		}
+	}
+
+	/// Fill `out_rays` for tile [x0, x1) × [y0, y1) with sub-pixel jitter.
+	/// jx/jy = jitter offset in [0, 1). Used for anti-aliasing.
+	void generate_rays_tile_jittered(Ray *out_rays, int x0, int y0, int x1, int y1,
+			float jx, float jy) const {
+		RT_ASSERT_NOT_NULL(out_rays);
+		RT_ASSERT(x0 >= 0 && y0 >= 0 && x1 <= width_ && y1 <= height_,
+			"RayCamera::generate_rays_tile_jittered: tile out of bounds");
+
+		int idx = 0;
+		for (int y = y0; y < y1; y++) {
+			for (int x = x0; x < x1; x++) {
+				out_rays[idx++] = generate_ray_jittered(x, y, jx, jy);
+			}
+		}
+	}
+
 	// ====================================================================
 	// Batch ray generation — the hot path
 	// ====================================================================
@@ -135,6 +173,7 @@ public:
 
 	bool is_orthographic() const { return is_ortho_; }
 	Vector3 origin() const { return origin_; }
+	Basis basis() const { return basis_; }
 	Vector3 forward() const { return forward_; }
 	int width() const { return width_; }
 	int height() const { return height_; }

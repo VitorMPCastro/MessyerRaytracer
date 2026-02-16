@@ -247,7 +247,7 @@ gantt
         Temporal accumulation           :d2, after d1, 2d
 ```
 
-#### 1.1 — Smooth Vertex Normals
+#### 1.1 — Smooth Vertex Normals ✅
 
 **Problem**: We use flat face normals from the triangle cross product. Every facet is visible.
 
@@ -259,7 +259,7 @@ hit_normal = normalize(n0 * (1 - u - v) + n1 * u + n2 * v)
 
 **Files**: `raytracer_server.cpp` (extraction), `core/triangle.h` (storage), `shade_pass.h` (interpolation), `bvh_traverse.comp.glsl` (GPU storage + interpolation)
 
-#### 1.2 — Cook-Torrance PBR
+#### 1.2 — Cook-Torrance PBR ✅
 
 **Problem**: `shade_pass.h` uses Lambert (N·L + 0.08 ambient). `MaterialData` stores metallic/roughness/specular but they're never read.
 
@@ -274,7 +274,7 @@ Where:
 
 **Files**: `shade_pass.h` (new `shade_pbr()` function), `material_data.h` (already has fields)
 
-#### 1.3 — Shadow Rays
+#### 1.3 — Shadow Rays ✅
 
 **Problem**: No shadows anywhere. The `any_hit` GPU mode exists but isn't wired to shading.
 
@@ -283,13 +283,21 @@ Where:
 **CPU path**: Use existing `cast_rays_any_hit()`.
 **GPU path**: Add a second dispatch pass in the render loop or pack shadow queries into the same dispatch.
 
-#### 1.4 — Environment Map / IBL
+#### 1.4 — Environment Map / IBL ✅
 
 **Problem**: Miss rays return black. No sky, no ambient lighting from an HDR environment.
 
-**Solution**: Load an equirectangular HDR panorama. For miss rays, sample the environment map as background. For shading, use importance-sampled IBL for specular and a precomputed irradiance map for diffuse ambient.
+**Solution**: Detect `PanoramaSkyMaterial` on the Environment's Sky. Load the equirectangular HDR panorama as RGBAF32, cache it (re-fetched only on texture resource change). For miss rays, sample the panorama via equirectangular direction→UV mapping with bilinear interpolation. For shading, sample the panorama in the surface normal direction as a basic diffuse IBL approximation. Full importance-sampled specular IBL deferred to Phase 2+.
 
-#### 1.5 — Anti-Aliasing (Jitter + Temporal Accumulation)
+**Implementation details**:
+- `EnvironmentData` extended with `panorama_data` (raw RGBAF32 pointer), `panorama_width`, `panorama_height`, `panorama_energy`
+- `sample_panorama()` in `shade_pass.h` — bilinear sampling on raw float pointer, no Godot headers
+- `direction_to_equirect_uv()` — longitude/latitude mapping: `u = atan2(x,z)/(2π) + 0.5`, `v = acos(y)/π`
+- `sky_color()` checks panorama first, falls back to analytic ProceduralSky gradient
+- Ambient section of `shade_material()` samples panorama in normal direction when available
+- Panorama Image cached in `ray_renderer.h`, invalidated by `Object::get_instance_id()` check
+
+#### 1.5 — Anti-Aliasing (Jitter + Temporal Accumulation) ✅
 
 **Problem**: 1 sample per pixel at exact pixel center → hard aliased edges.
 

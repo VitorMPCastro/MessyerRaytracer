@@ -24,6 +24,13 @@
 
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
+#include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/world_environment.hpp>
+#include <godot_cpp/classes/environment.hpp>
+#include <godot_cpp/classes/sky.hpp>
+#include <godot_cpp/classes/procedural_sky_material.hpp>
+#include <godot_cpp/classes/panorama_sky_material.hpp>
+#include <godot_cpp/classes/light3d.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/variant/node_path.hpp>
@@ -77,14 +84,29 @@ public:
 	void set_render_channel(int ch);
 	int get_render_channel() const;
 
-	void set_depth_range(float range);
-	float get_depth_range() const;
+	void set_light_path(const NodePath &path);
+	NodePath get_light_path() const;
+
+	void set_environment_path(const NodePath &path);
+	NodePath get_environment_path() const;
 
 	void set_position_range(float range);
 	float get_position_range() const;
 
-	void set_sun_direction(const Vector3 &dir);
-	Vector3 get_sun_direction() const;
+	void set_shadows_enabled(bool enabled);
+	bool get_shadows_enabled() const;
+
+	void set_aa_enabled(bool enabled);
+	bool get_aa_enabled() const;
+
+	void set_aa_max_samples(int max_samples);
+	int get_aa_max_samples() const;
+
+	/// Number of frames accumulated so far in the AA buffer.
+	int get_accumulation_count() const;
+
+	/// Force-reset the accumulation buffer (e.g. after scene changes).
+	void reset_accumulation();
 
 	// ======== Actions ========
 
@@ -101,9 +123,10 @@ public:
 	/// Wall-clock time of the last render_frame() in milliseconds.
 	float get_render_ms() const;
 
-	/// Time breakdown: ray generation, tracing, shading, conversion.
+	/// Time breakdown: ray generation, tracing, shadow rays, shading, conversion.
 	float get_raygen_ms() const;
 	float get_trace_ms() const;
+	float get_shadow_ms() const;
 	float get_shade_ms() const;
 	float get_convert_ms() const;
 
@@ -113,36 +136,59 @@ protected:
 private:
 	// ---- Properties ----
 	NodePath camera_path_;
+	NodePath light_path_;         // Optional: explicit DirectionalLight3D binding
+	NodePath environment_path_;   // Optional: explicit WorldEnvironment binding
 	Vector2i resolution_ = Vector2i(320, 240);
 	int render_channel_   = CHANNEL_COLOR;
-	float depth_range_    = 100.0f;   // Max depth for depth visualization
 	float position_range_ = 10.0f;    // Modulo range for position visualization
-	Vector3 sun_direction_ = Vector3(0.5f, 0.8f, 0.3f).normalized();
+	bool shadows_enabled_  = true;
+	bool aa_enabled_       = true;
+	int aa_max_samples_    = 256;  // Stop accumulating after this many frames
 
 	// ---- Internal state ----
 	RayCamera camera_;
 	RayImage framebuffer_;
 	std::vector<Ray> rays_;
 	std::vector<Intersection> hits_;
+	std::vector<Ray> shadow_rays_;        // Shadow rays toward sun from hit points
+	std::vector<uint8_t> shadow_mask_;    // 0 = in shadow, 1 = lit (for shade pass)
+
+	// ---- Temporal accumulation (anti-aliasing) ----
+	std::vector<float> accum_buffer_;    // Accumulated RGB per pixel (3 floats each)
+	int accum_count_  = 0;               // Number of accumulated samples
+	Vector3 prev_cam_origin_;            // For detecting camera motion
+	Basis prev_cam_basis_;               // For detecting camera rotation
+
+	// ---- Cached HDR panorama (Phase 1.4 — Environment Map) ----
+	// Converted to FORMAT_RGBAF once and cached. Re-fetched only when
+	// the panorama Texture2D resource changes (detected via instance ID comparison).
+	Ref<Image> cached_panorama_image_;           // RGBAF32 image data
+	uint64_t cached_panorama_instance_id_ = 0;   // ObjectID of the last-seen panorama Texture2D
 	Ref<ImageTexture> output_texture_;
 	Ref<Image> output_image_;  // Cached for zero-alloc parallel conversion
 	std::unique_ptr<ThreadPool> pool_;  // Parallel raygen / shade / convert
 
 	// ---- Timing (ms) ----
-	float total_ms_   = 0.0f;
-	float raygen_ms_  = 0.0f;
-	float trace_ms_   = 0.0f;
-	float shade_ms_   = 0.0f;
-	float convert_ms_ = 0.0f;
+	float total_ms_    = 0.0f;
+	float raygen_ms_   = 0.0f;
+	float trace_ms_    = 0.0f;
+	float shadow_ms_   = 0.0f;
+	float shade_ms_    = 0.0f;
+	float convert_ms_  = 0.0f;
 
 	// ---- Service access ----
 	IRayService *_get_service() const;
 
-	// ---- Internal pipeline stages ----
+	// ---- Scene node resolution (Godot-Native Principle) ----
 	Camera3D *_resolve_camera() const;
+	DirectionalLight3D *_resolve_light() const;
+	WorldEnvironment *_resolve_environment() const;
+
+	// ---- Internal pipeline stages ----
 	void _generate_rays(Camera3D *cam);
 	void _trace_rays(IRayService *svc);
-	void _shade_results();
+	void _trace_shadow_rays(IRayService *svc, const Vector3 &sun_dir);
+	void _shade_results(Camera3D *cam, DirectionalLight3D *light, WorldEnvironment *world_env);
 	void _convert_output();
 };
 
