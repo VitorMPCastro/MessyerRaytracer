@@ -94,6 +94,8 @@ struct Triangle {
 			out.t = t;
 			out.position = r.at(t);
 			out.normal = normal; // Precomputed! Was: edge1.cross(edge2).normalized()
+			out.u = u;           // Barycentric coord for v1 (already computed above)
+			out.v = v;           // Barycentric coord for v2 (already computed above)
 			out.prim_id = id;
 			return true;
 		}

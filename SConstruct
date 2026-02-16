@@ -66,7 +66,7 @@ shader_header = env.Command(
     embed_shader_action,
 )
 
-sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp")
+sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp") + Glob("src/modules/*/*.cpp")
 env.Depends(sources, shader_header)
 
 if env["target"] in ["editor", "template_debug"]:

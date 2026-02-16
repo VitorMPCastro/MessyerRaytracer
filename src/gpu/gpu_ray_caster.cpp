@@ -232,8 +232,11 @@ void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count,
 		hit.t = g.t;
 		hit.position = Vector3(g.position[0], g.position[1], g.position[2]);
 		hit.normal = Vector3(g.normal[0], g.normal[1], g.normal[2]);
+		hit.u = g.bary_u;
+		hit.v = g.bary_v;
 		if (g.prim_id >= 0) {
 			hit.prim_id = static_cast<uint32_t>(g.prim_id);
+			hit.hit_layers = g.hit_layers;
 		} else {
 			hit.set_miss();
 		}
@@ -318,8 +321,11 @@ void GPURayCaster::collect_nearest(Intersection *results, int count) {
 		hit.t = g.t;
 		hit.position = Vector3(g.position[0], g.position[1], g.position[2]);
 		hit.normal = Vector3(g.normal[0], g.normal[1], g.normal[2]);
+		hit.u = g.bary_u;
+		hit.v = g.bary_v;
 		if (g.prim_id >= 0) {
 			hit.prim_id = static_cast<uint32_t>(g.prim_id);
+			hit.hit_layers = g.hit_layers;
 		} else {
 			hit.set_miss();
 		}

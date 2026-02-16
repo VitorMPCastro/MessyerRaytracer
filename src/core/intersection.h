@@ -24,6 +24,14 @@ struct Intersection {
 	// Useful for shading (graphics), reflection (audio), and orientation (AI).
 	Vector3 normal;
 
+	// Barycentric coordinates at the hit point.
+	// u, v are the Möller-Trumbore barycentric weights for v1 and v2:
+	//   hit_point = (1 - u - v) * v0 + u * v1 + v * v2
+	// Use these for texture mapping, smooth normal interpolation, and vertex
+	// color blending. Computed in Triangle::intersect(), zero cost to store.
+	float u;
+	float v;
+
 	// Which triangle/primitive was hit. Use this to look up material, mesh, etc.
 	uint32_t prim_id;
 
@@ -35,11 +43,13 @@ struct Intersection {
 
 	// Default: no hit.
 	Intersection()
-		: t(FLT_MAX), position(), normal(), prim_id(NO_HIT), hit_layers(0) {}
+		: t(FLT_MAX), position(), normal(), u(0.0f), v(0.0f), prim_id(NO_HIT), hit_layers(0) {}
 
 	// Reset to "no hit" state. Call this before testing a new ray.
 	void set_miss() {
 		t = FLT_MAX;
+		u = 0.0f;
+		v = 0.0f;
 		prim_id = NO_HIT;
 		hit_layers = 0;
 	}

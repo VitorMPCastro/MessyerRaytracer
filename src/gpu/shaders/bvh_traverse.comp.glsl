@@ -33,6 +33,8 @@ struct GPURay {
 struct GPUIntersection {
     vec3 position; float t;
     vec3 normal;   int prim_id;
+    float bary_u;  float bary_v;
+    uint hit_layers; float _pad;
 };
 
 // ============================================================================
@@ -109,7 +111,8 @@ bool ray_aabb(vec3 origin, vec3 inv_dir, float t_min, float t_max,
 
 bool ray_triangle(vec3 origin, vec3 direction, float t_min,
                   vec3 v0, vec3 edge1, vec3 edge2, vec3 tri_normal,
-                  inout float best_t, out vec3 hit_pos, out vec3 hit_normal) {
+                  inout float best_t, out vec3 hit_pos, out vec3 hit_normal,
+                  out float out_u, out float out_v) {
     vec3 pvec = cross(direction, edge2);
     float det = dot(edge1, pvec);
 
@@ -130,6 +133,8 @@ bool ray_triangle(vec3 origin, vec3 direction, float t_min,
     best_t = t;
     hit_pos = origin + direction * t;
     hit_normal = tri_normal;
+    out_u = u;
+    out_v = v;
     return true;
 }
 
@@ -192,6 +197,9 @@ void main() {
     vec3 best_pos      = vec3(0.0);
     vec3 best_normal   = vec3(0.0);
     int best_prim      = -1;
+    float best_u       = 0.0;
+    float best_v       = 0.0;
+    uint best_layers   = 0u;
 
     // ---- Test root AABB ----
     float root_tmin, root_tmax;
@@ -203,6 +211,9 @@ void main() {
         results[ray_idx].t = t_max;
         results[ray_idx].normal = vec3(0.0);
         results[ray_idx].prim_id = -1;
+        results[ray_idx].bary_u = 0.0;
+        results[ray_idx].bary_v = 0.0;
+        results[ray_idx].hit_layers = 0u;
         return;
     }
 
@@ -235,24 +246,31 @@ void main() {
                 // Skip triangles not on any queried layer.
                 if ((triangles[tri_idx].layers & query_mask) == 0u) continue;
                 vec3 hp, hn;
+                float hu, hv;
                 if (ray_triangle(origin, direction, t_min,
                                  triangles[tri_idx].v0,
                                  triangles[tri_idx].edge1,
                                  triangles[tri_idx].edge2,
                                  triangles[tri_idx].normal,
-                                 best_t, hp, hn)) {
+                                 best_t, hp, hn, hu, hv)) {
                     best_pos    = hp;
                     best_normal = hn;
+                    best_u      = hu;
+                    best_v      = hv;
                     best_prim   = int(triangles[tri_idx].id);
+                    best_layers = triangles[tri_idx].layers;
 
                     // ANY_HIT: Return immediately on first intersection.
                     // No need to find the closest — just report that something was hit.
                     // The compiler eliminates this block entirely for nearest-hit pipelines.
                     if (RAY_MODE == 1u) {
-                        results[ray_idx].t        = best_t;
-                        results[ray_idx].position = best_pos;
-                        results[ray_idx].normal   = best_normal;
-                        results[ray_idx].prim_id  = best_prim;
+                        results[ray_idx].t          = best_t;
+                        results[ray_idx].position   = best_pos;
+                        results[ray_idx].normal     = best_normal;
+                        results[ray_idx].prim_id    = best_prim;
+                        results[ray_idx].bary_u     = best_u;
+                        results[ray_idx].bary_v     = best_v;
+                        results[ray_idx].hit_layers = best_layers;
                         return;
                     }
                 }
@@ -301,8 +319,11 @@ void main() {
     }
 
     // ---- Write result ----
-    results[ray_idx].t        = best_t;
-    results[ray_idx].position = best_pos;
-    results[ray_idx].normal   = best_normal;
-    results[ray_idx].prim_id  = best_prim;
+    results[ray_idx].t          = best_t;
+    results[ray_idx].position   = best_pos;
+    results[ray_idx].normal     = best_normal;
+    results[ray_idx].prim_id    = best_prim;
+    results[ray_idx].bary_u     = best_u;
+    results[ray_idx].bary_v     = best_v;
+    results[ray_idx].hit_layers = best_layers;
 }

@@ -95,21 +95,27 @@ struct GPURayPacked {
 static_assert(sizeof(GPURayPacked) == 32, "GPURayPacked must be 32 bytes (std430)");
 
 // ============================================================================
-// GPU Intersection Result — 32 bytes
+// GPU Intersection Result — 48 bytes
 // ============================================================================
 //
 // GLSL layout:
 //   struct GPUIntersection {
-//       vec3 position; float t;       // offset  0–15
-//       vec3 normal;   int prim_id;   // offset 16–31
+//       vec3 position; float t;                   // offset  0–15
+//       vec3 normal;   int prim_id;               // offset 16–31
+//       float bary_u;  float bary_v;
+//       uint hit_layers; float _pad;              // offset 32–47
 //   };
 //
 // prim_id == -1 means "no hit" (the GPU equivalent of Intersection::NO_HIT).
+// bary_u, bary_v = Möller-Trumbore barycentric coordinates.
+// hit_layers = visibility layer bitmask of the hit triangle.
 struct GPUIntersectionPacked {
 	float position[3]; float t;
 	float normal[3];   int32_t prim_id;
+	float bary_u;      float bary_v;
+	uint32_t hit_layers; float _pad;
 };
-static_assert(sizeof(GPUIntersectionPacked) == 32, "GPUIntersectionPacked must be 32 bytes (std430)");
+static_assert(sizeof(GPUIntersectionPacked) == 48, "GPUIntersectionPacked must be 48 bytes (std430)");
 
 // ============================================================================
 // Push Constants — 16 bytes
