@@ -143,7 +143,14 @@ public:
 		int sp = 0;
 		stack[sp++] = { 0, root_tmin };
 
+		// Safety guard: prevent infinite loops from corrupted BVH data.
+		// Same strategy as the GPU shader (MAX_ITERATIONS = 65536).
+		// A healthy BVH with 100K triangles visits ~50 nodes per ray.
+		static constexpr int MAX_ITERATIONS = 65536;
+		int iterations = 0;
+
 		while (sp > 0) {
+			if (++iterations > MAX_ITERATIONS) break;
 			RT_ASSERT(sp <= 64, "BVH traversal stack overflow in cast_ray");
 			StackEntry entry = stack[--sp];
 
@@ -228,7 +235,11 @@ public:
 		int sp = 0;
 		stack[sp++] = 0;
 
+		static constexpr int MAX_ITERATIONS = 65536;
+		int iterations = 0;
+
 		while (sp > 0) {
+			if (++iterations > MAX_ITERATIONS) break;
 			RT_ASSERT(sp <= 64, "BVH traversal stack overflow in any_hit");
 			uint32_t node_idx = stack[--sp];
 			const BVHNode &node = nodes_[node_idx];
@@ -302,8 +313,20 @@ public:
 		int sp = 0;
 		stack[sp++] = 0; // root
 
+		static constexpr int MAX_ITERATIONS = 65536;
+		int iterations = 0;
+
 		while (sp > 0) {
+			if (++iterations > MAX_ITERATIONS) break;
+
+			// Clamp stack pointer to prevent buffer overflow from corrupted data.
+			if (sp > 63) sp = 63;
+
 			uint32_t node_idx = stack[--sp];
+
+			// Bounds-check node index to prevent out-of-range access.
+			if (node_idx >= node_count_) break;
+
 			const BVHNode &node = nodes_[node_idx];
 
 			// Packet AABB test: returns bitmask of which rays hit this node.
@@ -332,8 +355,10 @@ public:
 				// Simple near-far heuristic: push right first (popped second).
 				uint32_t left = node_idx + 1;
 				uint32_t right = node.left_first;
-				stack[sp++] = right;
-				stack[sp++] = left;
+				if (sp < 62) { // Leave room for 2 pushes
+					stack[sp++] = right;
+					stack[sp++] = left;
+				}
 			}
 		}
 

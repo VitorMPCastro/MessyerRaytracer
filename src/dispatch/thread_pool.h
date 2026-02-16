@@ -95,12 +95,23 @@ public:
 		// Calling thread processes chunk 0
 		int start = 0;
 		int end = std::min(chunk_size, count);
-		func(start, end);
+		try {
+			func(start, end);
+		} catch (const std::exception &e) {
+			ERR_PRINT(godot::String("ThreadPool main-thread exception: ") + e.what());
+		} catch (...) {
+			ERR_PRINT("ThreadPool main-thread: unknown exception");
+		}
 
-		// Wait for all worker chunks to complete
+		// Wait for all worker chunks to complete.
+		// Safety: timeout after 30 seconds to prevent permanent freeze.
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
-			cv_done_.wait(lock, [this] { return pending_chunks_.load() == 0; });
+			bool completed = cv_done_.wait_for(lock, std::chrono::seconds(30),
+					[this] { return pending_chunks_.load() == 0; });
+			if (!completed) {
+				ERR_PRINT("[ThreadPool] WARNING: dispatch_and_wait timed out after 30s -- possible worker hang");
+			}
 		}
 	}
 

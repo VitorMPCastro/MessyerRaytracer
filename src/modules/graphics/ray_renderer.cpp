@@ -273,7 +273,7 @@ void RayRenderer::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_render_channel", "channel"), &RayRenderer::set_render_channel);
 	ClassDB::bind_method(D_METHOD("get_render_channel"), &RayRenderer::get_render_channel);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "render_channel", PROPERTY_HINT_ENUM,
-		"Color,Normal,Depth,Barycentric,Position,PrimID,HitMask,Albedo"),
+		"Color,Normal,Depth,Barycentric,Position,PrimID,HitMask,Albedo,Wireframe,UV,Fresnel"),
 		"set_render_channel", "get_render_channel");
 
 	ClassDB::bind_method(D_METHOD("set_depth_range", "range"), &RayRenderer::set_depth_range);
@@ -315,4 +315,7 @@ void RayRenderer::_bind_methods() {
 	BIND_ENUM_CONSTANT(CHANNEL_PRIM_ID);
 	BIND_ENUM_CONSTANT(CHANNEL_HIT_MASK);
 	BIND_ENUM_CONSTANT(CHANNEL_ALBEDO);
+	BIND_ENUM_CONSTANT(CHANNEL_WIREFRAME);
+	BIND_ENUM_CONSTANT(CHANNEL_UV);
+	BIND_ENUM_CONSTANT(CHANNEL_FRESNEL);
 }

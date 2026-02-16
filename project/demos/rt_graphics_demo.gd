@@ -105,8 +105,9 @@ func _ready() -> void:
 		+ "WASD / Arrows — Move camera\n"
 		+ "Mouse — Look around\n"
 		+ "Q / E — Down / Up\n\n"
-		+ "1-7 — Select channel\n"
+		+ "0-9 — Select channel\n"
 		+ "TAB — Cycle channel\n"
+		+ "H — Toggle render view\n"
 		+ "R — Render frame\n"
 		+ "B — Cycle backend\n"
 		+ "F — Toggle auto-render\n"
@@ -170,6 +171,8 @@ func _input(event: InputEvent) -> void:
 			KEY_F:
 				renderer_panel.auto_render = not renderer_panel.auto_render
 				renderer_panel.sync_from_node()
+			KEY_H:
+				tex_rect.visible = not tex_rect.visible
 			KEY_EQUAL:
 				_change_resolution(1)
 			KEY_MINUS:
@@ -187,6 +190,9 @@ func _input(event: InputEvent) -> void:
 			KEY_5: renderer_panel.set_channel(4); _do_render()
 			KEY_6: renderer_panel.set_channel(5); _do_render()
 			KEY_7: renderer_panel.set_channel(6); _do_render()
+			KEY_8: renderer_panel.set_channel(7); _do_render()
+			KEY_9: renderer_panel.set_channel(8); _do_render()
+			KEY_0: renderer_panel.set_channel(9); _do_render()
 
 
 func _process(delta: float) -> void:

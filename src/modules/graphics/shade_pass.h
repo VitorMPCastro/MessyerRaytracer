@@ -217,6 +217,83 @@ inline void shade_hit_mask(RayImage &fb, int idx, const Intersection &hit) {
 }
 
 // ========================================================================
+// Wireframe — highlight triangle edges using barycentric proximity
+// ========================================================================
+// Uses the common shader trick: if any barycentric coordinate (u, v, 1-u-v)
+// is close to 0, the pixel is near an edge. The threshold controls the
+// wire thickness; smoothstep gives anti-aliased edges.
+
+inline void shade_wireframe(RayImage &fb, int idx, const Intersection &hit) {
+	if (!hit.hit()) {
+		fb.write_pixel(RayImage::WIREFRAME, idx, 0.0f, 0.0f, 0.0f, 1.0f);
+		return;
+	}
+	float w0 = 1.0f - hit.u - hit.v;
+	float w1 = hit.u;
+	float w2 = hit.v;
+	// Distance to nearest edge = min of the three barycentric coords.
+	float d = std::min({w0, w1, w2});
+	// Smoothstep between 0.01 and 0.03 for anti-aliased lines.
+	float lo = 0.01f, hi = 0.03f;
+	float t = (d - lo) / (hi - lo);
+	t = (t < 0.0f) ? 0.0f : ((t > 1.0f) ? 1.0f : t);
+	float edge = 1.0f - t * t * (3.0f - 2.0f * t); // smoothstep inverse
+	// Wire = white on dark gray background.
+	float bg = 0.08f;
+	float v = bg + edge * (1.0f - bg);
+	fb.write_pixel(RayImage::WIREFRAME, idx, v, v, v, 1.0f);
+}
+
+// ========================================================================
+// UV visualization — texture coordinates as Red/Green color
+// ========================================================================
+// Shows the UV parameterization of the mesh. Useful for spotting
+// UV seams, stretching, and validating texture mapping.
+
+inline void shade_uv(RayImage &fb, int idx, const Intersection &hit,
+		const SceneShadeData &shade_data) {
+	if (!hit.hit()) {
+		fb.write_pixel(RayImage::UV, idx, 0.0f, 0.0f, 0.0f, 1.0f);
+		return;
+	}
+	float r = 0.5f, g = 0.5f;
+	if (shade_data.triangle_uvs &&
+			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
+		const TriangleUV &tri_uv = shade_data.triangle_uvs[hit.prim_id];
+		Vector2 uv = tri_uv.interpolate(hit.u, hit.v);
+		// Fractional part for tiling visualization.
+		r = uv.x - std::floor(uv.x);
+		g = uv.y - std::floor(uv.y);
+	}
+	fb.write_pixel(RayImage::UV, idx, r, g, 0.0f, 1.0f);
+}
+
+// ========================================================================
+// Fresnel / facing ratio — |N · V| mapped to a blue-white gradient
+// ========================================================================
+// Shows the angle between surface normal and view direction.
+// Surfaces facing the camera = bright, grazing angles = dark blue.
+// Useful for debugging normals, detecting inverted faces, and previewing
+// rim-light / Fresnel effects before full material shading.
+
+inline void shade_fresnel(RayImage &fb, int idx, const Intersection &hit,
+		const Ray &ray) {
+	if (!hit.hit()) {
+		fb.write_pixel(RayImage::FRESNEL, idx, 0.0f, 0.0f, 0.0f, 1.0f);
+		return;
+	}
+	// View direction = -ray.direction (toward camera).
+	Vector3 V = -ray.direction;
+	float NdV = hit.normal.dot(V);
+	NdV = (NdV < 0.0f) ? 0.0f : ((NdV > 1.0f) ? 1.0f : NdV);
+	// Map to a blue→white gradient: grazing = blue, facing = white.
+	float r = NdV;
+	float g = NdV;
+	float b = 0.3f + NdV * 0.7f;
+	fb.write_pixel(RayImage::FRESNEL, idx, r, g, b, 1.0f);
+}
+
+// ========================================================================
 // Shade ALL channels for a single pixel.
 // This is the main entry point called per pixel from the render loop.
 // One BVH traversal, 7 channel writes — the AOV pattern in action.
@@ -234,6 +311,9 @@ inline void shade_all(RayImage &fb, int idx, const Intersection &hit,
 	shade_prim_id(fb, idx, hit);
 	shade_hit_mask(fb, idx, hit);
 	shade_albedo(fb, idx, hit, shade_data);
+	shade_wireframe(fb, idx, hit);
+	shade_uv(fb, idx, hit, shade_data);
+	shade_fresnel(fb, idx, hit, ray);
 }
 
 // ========================================================================
@@ -255,6 +335,9 @@ inline void shade_channel(RayImage &fb, int idx, const Intersection &hit,
 		case RayImage::PRIM_ID:     shade_prim_id(fb, idx, hit); break;
 		case RayImage::HIT_MASK:    shade_hit_mask(fb, idx, hit); break;
 		case RayImage::ALBEDO:      shade_albedo(fb, idx, hit, shade_data); break;
+		case RayImage::WIREFRAME:   shade_wireframe(fb, idx, hit); break;
+		case RayImage::UV:          shade_uv(fb, idx, hit, shade_data); break;
+		case RayImage::FRESNEL:     shade_fresnel(fb, idx, hit, ray); break;
 		default:                    shade_material(fb, idx, hit, sun_dir, shade_data); break;
 	}
 }

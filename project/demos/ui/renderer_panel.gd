@@ -18,7 +18,8 @@ var _res_presets: Array[Vector2i] = [
 	Vector2i(960, 720), Vector2i(1280, 960), Vector2i(1920, 1080),
 ]
 var _channel_names: Array[String] = [
-	"Color", "Normal", "Depth", "Barycentric", "Position", "PrimID", "HitMask"
+	"Color", "Normal", "Depth", "Barycentric", "Position", "PrimID", "HitMask",
+	"Albedo", "Wireframe", "UV", "Fresnel"
 ]
 
 @onready var _channel_btn: OptionButton = %ChannelBtn

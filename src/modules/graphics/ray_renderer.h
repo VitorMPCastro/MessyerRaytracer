@@ -55,6 +55,9 @@ public:
 		CHANNEL_PRIM_ID     = 5,
 		CHANNEL_HIT_MASK    = 6,
 		CHANNEL_ALBEDO      = 7,
+		CHANNEL_WIREFRAME   = 8,
+		CHANNEL_UV          = 9,
+		CHANNEL_FRESNEL     = 10,
 	};
 
 	RayRenderer();

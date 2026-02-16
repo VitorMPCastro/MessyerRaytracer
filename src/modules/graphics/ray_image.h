@@ -43,6 +43,9 @@ public:
 		PRIM_ID     = 5,  ///< Hash of primitive ID → unique color
 		HIT_MASK    = 6,  ///< White if hit, black if miss
 		ALBEDO      = 7,  ///< Pure material color (no lighting)
+		WIREFRAME   = 8,  ///< Triangle edges via barycentric proximity
+		UV          = 9,  ///< Texture coordinates as RG color
+		FRESNEL     = 10, ///< Facing ratio |N·V| (edge glow / silhouette)
 		CHANNEL_COUNT
 	};
 

@@ -115,7 +115,6 @@ current = true
 fov = 65.0
 
 [node name="RaySceneSetup" type="RaySceneSetup" parent="." unique_id=1849438382]
-gi_mode = 2
 
 [node name="RayRenderer" type="RayRenderer" parent="." unique_id=2097255595]
 camera_path = NodePath("../Camera3D")
