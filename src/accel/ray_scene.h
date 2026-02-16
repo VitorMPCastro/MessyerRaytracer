@@ -47,15 +47,15 @@ struct RayScene {
 
 		// Brute force fallback
 		Intersection closest;
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 		for (const Triangle &tri : triangles) {
-			if ((tri.layers & query_mask) == 0) continue;
-			if (stats) stats->tri_tests++;
+			if ((tri.layers & query_mask) == 0) { continue; }
+			if (stats) { stats->tri_tests++; }
 			if (tri.intersect(r, closest)) {
 				closest.hit_layers = tri.layers;
 			}
 		}
-		if (stats && closest.hit()) stats->hits++;
+		if (stats && closest.hit()) { stats->hits++; }
 		return closest;
 	}
 
@@ -69,13 +69,13 @@ struct RayScene {
 		}
 
 		// Brute force fallback
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 		Intersection temp;
 		for (const Triangle &tri : triangles) {
-			if ((tri.layers & query_mask) == 0) continue;
-			if (stats) stats->tri_tests++;
+			if ((tri.layers & query_mask) == 0) { continue; }
+			if (stats) { stats->tri_tests++; }
 			if (tri.intersect(r, temp)) {
-				if (stats) stats->hits++;
+				if (stats) { stats->hits++; }
 				return true;
 			}
 		}

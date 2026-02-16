@@ -1,5 +1,5 @@
 #pragma once
-// aabb.h — Axis-Aligned Bounding Box ray intersection (slab test).
+// aabb_intersect.h — Axis-Aligned Bounding Box ray intersection (slab test).
 //
 // The performance-critical inner loop of BVH traversal.
 // For each BVH node, this determines if the ray enters the bounding box.

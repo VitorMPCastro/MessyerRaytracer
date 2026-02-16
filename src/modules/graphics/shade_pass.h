@@ -19,6 +19,8 @@
 #include "modules/graphics/texture_sampler.h"
 #include "api/scene_shade_data.h"
 
+#include "core/asserts.h"
+
 #include <cmath>
 #include <cstdint>
 
@@ -29,6 +31,9 @@ namespace ShadePass {
 // ========================================================================
 
 inline void shade_normal(RayImage &fb, int idx, const Intersection &hit) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(fb.pixel_count() > 0, "shade_normal: framebuffer not initialized");
+
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::NORMAL, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -190,6 +195,9 @@ inline void shade_position(RayImage &fb, int idx, const Intersection &hit,
 // ========================================================================
 
 inline void shade_prim_id(RayImage &fb, int idx, const Intersection &hit) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(fb.pixel_count() > 0, "shade_prim_id: framebuffer not initialized");
+
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::PRIM_ID, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -224,6 +232,9 @@ inline void shade_hit_mask(RayImage &fb, int idx, const Intersection &hit) {
 // wire thickness; smoothstep gives anti-aliased edges.
 
 inline void shade_wireframe(RayImage &fb, int idx, const Intersection &hit) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(fb.pixel_count() > 0, "shade_wireframe: framebuffer not initialized");
+
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::WIREFRAME, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -283,13 +294,13 @@ inline void shade_fresnel(RayImage &fb, int idx, const Intersection &hit,
 		return;
 	}
 	// View direction = -ray.direction (toward camera).
-	Vector3 V = -ray.direction;
-	float NdV = hit.normal.dot(V);
-	NdV = (NdV < 0.0f) ? 0.0f : ((NdV > 1.0f) ? 1.0f : NdV);
+	Vector3 view_dir = -ray.direction;
+	float n_dot_v = hit.normal.dot(view_dir);
+	n_dot_v = (n_dot_v < 0.0f) ? 0.0f : ((n_dot_v > 1.0f) ? 1.0f : n_dot_v);
 	// Map to a blue→white gradient: grazing = blue, facing = white.
-	float r = NdV;
-	float g = NdV;
-	float b = 0.3f + NdV * 0.7f;
+	float r = n_dot_v;
+	float g = n_dot_v;
+	float b = 0.3f + n_dot_v * 0.7f;
 	fb.write_pixel(RayImage::FRESNEL, idx, r, g, b, 1.0f);
 }
 

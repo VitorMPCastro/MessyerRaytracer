@@ -111,6 +111,9 @@ void RayTracerDebug::_ensure_debug_objects() {
 		material_->set_flag(BaseMaterial3D::FLAG_DISABLE_DEPTH_TEST, true);
 		material_->set_transparency(BaseMaterial3D::TRANSPARENCY_ALPHA);
 	}
+
+	RT_ASSERT(mesh_instance_ != nullptr, "_ensure_debug_objects: mesh_instance must be valid");
+	RT_ASSERT(mesh_.is_valid(), "_ensure_debug_objects: mesh must be valid");
 }
 
 // ============================================================================
@@ -119,6 +122,9 @@ void RayTracerDebug::_ensure_debug_objects() {
 
 // Mode 0: DRAW_RAYS -- classic green/red/yellow/cyan
 void RayTracerDebug::_draw_ray_classic(const Ray &r, const Intersection &hit) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_ray_classic: mesh must be valid");
+	RT_ASSERT_POSITIVE(ray_miss_length_);
+
 	if (hit.hit()) {
 		// Green line: origin -> hit
 		mesh_->surface_set_color(Color(0.0, 1.0, 0.0, 0.8));
@@ -159,6 +165,9 @@ void RayTracerDebug::_draw_ray_classic(const Ray &r, const Intersection &hit) {
 
 // Mode 1: DRAW_NORMALS -- color rays by surface normal (RGB = XYZ mapped 0..1)
 void RayTracerDebug::_draw_ray_normals(const Ray &r, const Intersection &hit) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_ray_normals: mesh must be valid");
+	RT_ASSERT_POSITIVE(ray_miss_length_);
+
 	if (hit.hit()) {
 		Color nc(
 			hit.normal.x * 0.5f + 0.5f,
@@ -185,9 +194,12 @@ void RayTracerDebug::_draw_ray_normals(const Ray &r, const Intersection &hit) {
 
 // Mode 2: DRAW_DISTANCE -- distance heatmap (close=white, far=red, very far=dark)
 void RayTracerDebug::_draw_ray_distance(const Ray &r, const Intersection &hit) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_ray_distance: mesh must be valid");
+	RT_ASSERT_POSITIVE(heatmap_max_distance_);
+
 	if (hit.hit()) {
 		float t_norm = hit.t / heatmap_max_distance_;
-		if (t_norm > 1.0f) t_norm = 1.0f;
+		if (t_norm > 1.0f) { t_norm = 1.0f; }
 
 		Color c;
 		if (t_norm < 0.33f) {
@@ -217,7 +229,7 @@ void RayTracerDebug::_draw_ray_distance(const Ray &r, const Intersection &hit) {
 void RayTracerDebug::_draw_ray_heatmap(const Ray &r, const Intersection &hit,
 		int tri_test_count) {
 	float cost = static_cast<float>(tri_test_count) / static_cast<float>(heatmap_max_cost_);
-	if (cost > 1.0f) cost = 1.0f;
+	if (cost > 1.0f) { cost = 1.0f; }
 
 	Color c;
 	if (cost < 0.25f) {
@@ -255,6 +267,9 @@ void RayTracerDebug::_draw_ray_heatmap(const Ray &r, const Intersection &hit,
 // Each of the 20 Godot render layers gets a distinct hue so you can visually
 // verify which geometry is assigned to which layer.
 void RayTracerDebug::_draw_ray_layers(const Ray &r, const Intersection &hit) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_ray_layers: mesh must be valid");
+	RT_ASSERT_POSITIVE(hit_marker_size_);
+
 	if (hit.hit()) {
 		// Find the lowest set bit in hit_layers to pick a deterministic color.
 		uint32_t mask = hit.hit_layers;
@@ -299,6 +314,9 @@ void RayTracerDebug::_draw_ray_layers(const Ray &r, const Intersection &hit) {
 // ============================================================================
 
 void RayTracerDebug::_draw_debug_ray(const Ray &r, const Intersection &hit, int ray_index) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_debug_ray: mesh must be valid");
+	RT_ASSERT(draw_mode_ >= DRAW_RAYS && draw_mode_ <= DRAW_LAYERS, "_draw_debug_ray: invalid draw mode");
+
 	switch (draw_mode_) {
 		case DRAW_RAYS:
 			_draw_ray_classic(r, hit);
@@ -340,6 +358,10 @@ void RayTracerDebug::_draw_debug_ray(const Ray &r, const Intersection &hit, int 
 // ============================================================================
 
 void RayTracerDebug::_draw_aabb_wireframe(const godot::AABB &box, const Color &color) {
+	RT_ASSERT(mesh_.is_valid(), "_draw_aabb_wireframe: mesh must be valid");
+	RT_ASSERT(box.size.x >= 0 && box.size.y >= 0 && box.size.z >= 0,
+		"_draw_aabb_wireframe: AABB must have non-negative size");
+
 	Vector3 p = box.position;
 	Vector3 s = box.size;
 
@@ -370,7 +392,7 @@ void RayTracerDebug::_draw_aabb_wireframe(const godot::AABB &box, const Color &c
 
 void RayTracerDebug::_draw_bvh_wireframe() {
 	RayTracerServer *server = RayTracerServer::get_singleton();
-	if (!server) return;
+	if (!server) { return; }
 
 	const auto &sc = server->scene();
 	if (!sc.use_bvh || !sc.bvh.is_built()) {
@@ -379,7 +401,10 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 	}
 
 	const auto &nodes = sc.bvh.get_nodes();
-	if (nodes.empty()) return;
+	if (nodes.empty()) { return; }
+
+	RT_ASSERT(!nodes.empty(), "_draw_bvh_wireframe: BVH nodes must not be empty after guard");
+	RT_ASSERT(bvh_depth_ >= -1, "_draw_bvh_wireframe: bvh_depth must be >= -1");
 
 	int target_depth = bvh_depth_;
 
@@ -402,10 +427,10 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 		auto [idx, depth] = queue.front();
 		queue.pop();
 
-		if (idx >= nodes.size()) continue;
+		if (idx >= nodes.size()) { continue; }
 		const auto &node = nodes[idx];
 
-		if (depth > max_observed_depth) max_observed_depth = depth;
+		if (depth > max_observed_depth) { max_observed_depth = depth; }
 
 		if (target_depth == -1) {
 			if (node.is_leaf()) {
@@ -442,7 +467,7 @@ void RayTracerDebug::cast_debug_rays(const Vector3 &origin, const Vector3 &forwa
 	RT_ASSERT(grid_w > 0 && grid_h > 0, "Debug ray grid dimensions must be positive");
 	RT_ASSERT(fov_degrees > 0.0f && fov_degrees < 180.0f, "FOV must be in (0, 180) degrees");
 
-	if (!debug_enabled_) return;
+	if (!debug_enabled_) { return; }
 
 	RayTracerServer *server = RayTracerServer::get_singleton();
 	if (!server) {
@@ -598,6 +623,10 @@ int RayTracerDebug::get_layer_mask() const { return layer_mask_; }
 // ============================================================================
 
 Dictionary RayTracerDebug::get_last_stats() const {
+	RT_ASSERT(last_stats_.hits <= last_stats_.rays_cast || last_stats_.rays_cast == 0,
+		"get_last_stats: hits must not exceed rays_cast");
+	RT_ASSERT_FINITE(last_cast_ms_);
+
 	Dictionary d;
 	d["rays_cast"] = static_cast<int64_t>(last_stats_.rays_cast);
 	d["tri_tests"] = static_cast<int64_t>(last_stats_.tri_tests);

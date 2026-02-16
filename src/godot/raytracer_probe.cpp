@@ -2,6 +2,7 @@
 
 #include "raytracer_probe.h"
 #include "raytracer_server.h"
+#include "core/asserts.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -43,13 +44,18 @@ void RayTracerProbe::_bind_methods() {
 void RayTracerProbe::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_READY:
+			RT_ASSERT(is_inside_tree(), "_notification(READY): expected to be inside scene tree");
 			if (auto_register_) {
 				register_children();
 			}
 			break;
 
 		case NOTIFICATION_EXIT_TREE:
+			RT_ASSERT(is_inside_tree(), "_notification(EXIT_TREE): expected to be inside scene tree");
 			unregister_children();
+			break;
+
+		default:
 			break;
 	}
 }
@@ -59,11 +65,14 @@ void RayTracerProbe::_notification(int p_what) {
 // ============================================================================
 
 void RayTracerProbe::register_children() {
+	RT_ASSERT(is_inside_tree(), "register_children: must be inside scene tree");
+
 	RayTracerServer *server = RayTracerServer::get_singleton();
 	if (!server) {
 		UtilityFunctions::print("[RayTracerProbe] Server not available");
 		return;
 	}
+	RT_ASSERT_NOT_NULL(server);
 
 	for (int i = 0; i < get_child_count(); i++) {
 		MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(get_child(i));
@@ -76,7 +85,7 @@ void RayTracerProbe::register_children() {
 	}
 }
 
-static void _register_recursive_helper(Node *node, RayTracerServer *server,
+static void register_recursive_helper(Node *node, RayTracerServer *server,
 		std::vector<int> &ids) {
 	MeshInstance3D *mesh = Object::cast_to<MeshInstance3D>(node);
 	if (mesh) {
@@ -86,7 +95,7 @@ static void _register_recursive_helper(Node *node, RayTracerServer *server,
 		}
 	}
 	for (int i = 0; i < node->get_child_count(); i++) {
-		_register_recursive_helper(node->get_child(i), server, ids);
+		register_recursive_helper(node->get_child(i), server, ids);
 	}
 }
 
@@ -98,13 +107,13 @@ void RayTracerProbe::register_children_recursive() {
 	}
 
 	for (int i = 0; i < get_child_count(); i++) {
-		_register_recursive_helper(get_child(i), server, registered_ids_);
+		register_recursive_helper(get_child(i), server, registered_ids_);
 	}
 }
 
 void RayTracerProbe::unregister_children() {
 	RayTracerServer *server = RayTracerServer::get_singleton();
-	if (!server) return;
+	if (!server) { return; }
 
 	for (int id : registered_ids_) {
 		server->unregister_mesh(id);
@@ -128,7 +137,7 @@ Dictionary RayTracerProbe::cast_ray(const Vector3 &direction) {
 
 bool RayTracerProbe::any_hit(const Vector3 &direction, float max_distance) {
 	RayTracerServer *server = RayTracerServer::get_singleton();
-	if (!server) return false;
+	if (!server) { return false; }
 	return server->any_hit(get_global_position(), direction, max_distance, layer_mask_);
 }
 

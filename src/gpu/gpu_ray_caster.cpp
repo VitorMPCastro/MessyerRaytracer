@@ -55,7 +55,7 @@ GPURayCaster::~GPURayCaster() {
 // ============================================================================
 
 bool GPURayCaster::initialize() {
-	if (initialized_) return true;
+	if (initialized_) { return true; }
 
 	// 1. Create a local rendering device (separate from the main renderer).
 	RenderingServer *rs = RenderingServer::get_singleton();
@@ -125,6 +125,10 @@ bool GPURayCaster::initialize() {
 		}
 	}
 
+	RT_ASSERT(shader_.is_valid(), "initialize: shader must be valid after successful creation");
+	RT_ASSERT(pipeline_.is_valid(), "initialize: nearest-hit pipeline must be valid after creation");
+	RT_ASSERT(pipeline_any_hit_.is_valid(), "initialize: any-hit pipeline must be valid after creation");
+
 	initialized_ = true;
 	UtilityFunctions::print("[GPU RayCaster] Initialized successfully");
 	return true;
@@ -139,7 +143,7 @@ bool GPURayCaster::is_available() const {
 // ============================================================================
 
 void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BVH &bvh) {
-	if (!initialized_ || triangles.empty() || !bvh.is_built()) return;
+	if (!initialized_ || triangles.empty() || !bvh.is_built()) { return; }
 	RT_ASSERT(initialized_, "GPU must be initialized before upload_scene");
 	RT_ASSERT(!triangles.empty(), "Cannot upload empty triangle array");
 
@@ -294,7 +298,7 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 
 void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count,
 		uint32_t query_mask) {
-	if (!is_available() || count <= 0) return;
+	if (!is_available() || count <= 0) { return; }
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT_NOT_NULL(results);
 	RT_ASSERT(count > 0, "GPURayCaster::cast_rays: count must be positive");
@@ -334,7 +338,7 @@ void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count,
 
 void GPURayCaster::cast_rays_any_hit(const Ray *rays, bool *hit_results, int count,
 		uint32_t query_mask) {
-	if (!is_available() || count <= 0) return;
+	if (!is_available() || count <= 0) { return; }
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT_NOT_NULL(hit_results);
 	RT_ASSERT(count > 0, "GPURayCaster::cast_rays_any_hit: count must be positive");
@@ -368,7 +372,7 @@ void GPURayCaster::dispatch_rays_internal(const Ray *rays, int count, const RID 
 // ============================================================================
 
 void GPURayCaster::submit_async(const Ray *rays, int count, uint32_t query_mask) {
-	if (!is_available() || count <= 0) return;
+	if (!is_available() || count <= 0) { return; }
 	RT_ASSERT(!pending_async_, "submit_async called while previous dispatch is still pending");
 	RT_ASSERT_NOT_NULL(rays);
 	dispatch_rays_no_sync(rays, count, pipeline_, query_mask);
@@ -378,7 +382,7 @@ void GPURayCaster::submit_async(const Ray *rays, int count, uint32_t query_mask)
 }
 
 void GPURayCaster::submit_async_any_hit(const Ray *rays, int count, uint32_t query_mask) {
-	if (!is_available() || count <= 0) return;
+	if (!is_available() || count <= 0) { return; }
 	RT_ASSERT(!pending_async_, "submit_async_any_hit called while previous dispatch is still pending");
 	RT_ASSERT_NOT_NULL(rays);
 	dispatch_rays_no_sync(rays, count, pipeline_any_hit_, query_mask);
@@ -388,7 +392,7 @@ void GPURayCaster::submit_async_any_hit(const Ray *rays, int count, uint32_t que
 }
 
 void GPURayCaster::collect_nearest(Intersection *results, int count) {
-	if (!pending_async_ || !rd_) return;
+	if (!pending_async_ || !rd_) { return; }
 	RT_ASSERT(pending_async_, "collect_nearest called without pending async dispatch");
 	RT_ASSERT_NOT_NULL(results);
 	RT_ASSERT_NOT_NULL(pending_rays_);
@@ -423,7 +427,7 @@ void GPURayCaster::collect_nearest(Intersection *results, int count) {
 }
 
 void GPURayCaster::collect_any_hit(bool *hit_results, int count) {
-	if (!pending_async_ || !rd_) return;
+	if (!pending_async_ || !rd_) { return; }
 	RT_ASSERT(pending_async_, "collect_any_hit called without pending async dispatch");
 	RT_ASSERT_NOT_NULL(hit_results);
 
@@ -503,6 +507,7 @@ void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &
 
 void GPURayCaster::cleanup() {
 	if (rd_) {
+		RT_ASSERT(rd_ != nullptr, "cleanup: rendering device must be valid before freeing resources");
 		free_ray_buffers();
 		free_scene_buffers();
 
@@ -519,6 +524,9 @@ void GPURayCaster::cleanup() {
 	scene_uploaded_ = false;
 	uniform_set_dirty_ = true;
 	ray_buffer_capacity_ = 0;
+
+	RT_ASSERT(rd_ == nullptr, "cleanup: rendering device must be null after cleanup");
+	RT_ASSERT(!initialized_, "cleanup: initialized_ must be false after cleanup");
 }
 
 // ============================================================================
@@ -526,7 +534,7 @@ void GPURayCaster::cleanup() {
 // ============================================================================
 
 void GPURayCaster::free_scene_buffers() {
-	if (!rd_) return;
+	if (!rd_) { return; }
 	// Free uniform set FIRST — it holds references to these buffers.
 	if (uniform_set_.is_valid())       { rd_->free_rid(uniform_set_);       uniform_set_ = RID(); }
 	if (triangle_buffer_.is_valid())   { rd_->free_rid(triangle_buffer_);   triangle_buffer_ = RID(); }
@@ -536,7 +544,7 @@ void GPURayCaster::free_scene_buffers() {
 }
 
 void GPURayCaster::free_ray_buffers() {
-	if (!rd_) return;
+	if (!rd_) { return; }
 	// Free uniform set FIRST — it holds references to these buffers.
 	if (uniform_set_.is_valid())    { rd_->free_rid(uniform_set_);    uniform_set_ = RID(); }
 	if (ray_buffer_.is_valid())     { rd_->free_rid(ray_buffer_);     ray_buffer_ = RID(); }
@@ -546,7 +554,9 @@ void GPURayCaster::free_ray_buffers() {
 }
 
 void GPURayCaster::ensure_ray_buffers(uint32_t ray_count) {
-	if (ray_count <= ray_buffer_capacity_) return;
+	if (ray_count <= ray_buffer_capacity_) { return; }
+	RT_ASSERT(ray_count > 0, "ensure_ray_buffers: ray_count must be positive");
+	RT_ASSERT(rd_ != nullptr, "ensure_ray_buffers: rendering device must be valid");
 
 	// Grow with 1.5x factor to reduce reallocation frequency.
 	uint32_t new_capacity = ray_count;
@@ -563,17 +573,23 @@ void GPURayCaster::ensure_ray_buffers(uint32_t ray_count) {
 	ray_buffer_ = rd_->storage_buffer_create(ray_bytes);
 	result_buffer_ = rd_->storage_buffer_create(result_bytes);
 
+	RT_ASSERT(ray_buffer_.is_valid(), "ensure_ray_buffers: ray buffer creation failed");
+	RT_ASSERT(result_buffer_.is_valid(), "ensure_ray_buffers: result buffer creation failed");
+
 	ray_buffer_capacity_ = new_capacity;
 	uniform_set_dirty_ = true;
 }
 
 void GPURayCaster::rebuild_uniform_set() {
-	if (!uniform_set_dirty_) return;
+	if (!uniform_set_dirty_) { return; }
 
 	if (uniform_set_.is_valid()) {
 		rd_->free_rid(uniform_set_);
 		uniform_set_ = RID();
 	}
+
+	RT_ASSERT(rd_ != nullptr, "rebuild_uniform_set: rendering device must be valid");
+	RT_ASSERT(shader_.is_valid(), "rebuild_uniform_set: shader must be valid to create uniform set");
 
 	// All 4 buffers must be valid to create the uniform set.
 	if (!triangle_buffer_.is_valid() || !bvh_node_buffer_.is_valid() ||
@@ -624,5 +640,6 @@ void GPURayCaster::rebuild_uniform_set() {
 	}
 
 	uniform_set_ = rd_->uniform_set_create(uniforms, shader_, 0);
+	RT_ASSERT(uniform_set_.is_valid(), "rebuild_uniform_set: uniform set creation failed");
 	uniform_set_dirty_ = false;
 }

@@ -75,7 +75,7 @@ private:
 		float roughness_threshold;
 		float ray_max_distance;
 		uint32_t frame_count;
-		uint32_t _pad;
+		uint32_t pad;
 	};
 	static_assert(sizeof(TracePushConstants) == 144, "TracePushConstants must be 144 bytes");
 
@@ -91,7 +91,7 @@ private:
 		float blend_factor;
 		float depth_threshold;
 		uint32_t frame_count;
-		uint32_t _pad;
+		uint32_t pad;
 	};
 	static_assert(sizeof(TemporalDenoisePushConstants) == 16, "TemporalDenoisePushConstants must be 16 bytes");
 
@@ -100,32 +100,32 @@ private:
 		float roughness_threshold;
 		float reflection_intensity;
 		float f0;
-		uint32_t _pad;
+		uint32_t pad;
 	};
 	static_assert(sizeof(CompositePushConstants) == 80, "CompositePushConstants must be 80 bytes");
 	#pragma pack(pop)
 
 	// ---- Intermediate texture management (lazy-init to avoid static init before Godot) ----
-	static const StringName &ctx_rt_reflections();
-	static const StringName &tex_reflection_raw();
-	static const StringName &tex_reflection_denoised();
-	static const StringName &tex_reflection_history();
+	static const StringName &_ctx_rt_reflections();
+	static const StringName &_tex_reflection_raw();
+	static const StringName &_tex_reflection_denoised();
+	static const StringName &_tex_reflection_history();
 
-	void _ensure_textures(Ref<RenderSceneBuffersRD> scene_buffers, const Vector2i &size);
-	void _pass_trace(Ref<RenderSceneBuffersRD> scene_buffers,
+	void _ensure_textures(const Ref<RenderSceneBuffersRD> &scene_buffers, const Vector2i &size);
+	void _pass_trace(const Ref<RenderSceneBuffersRD> &scene_buffers,
 					 RenderSceneData *scene_data,
 					 const Vector2i &size);
-	void _pass_spatial_denoise(Ref<RenderSceneBuffersRD> scene_buffers,
+	void _pass_spatial_denoise(const Ref<RenderSceneBuffersRD> &scene_buffers,
 							   const Vector2i &size);
-	void _pass_temporal_denoise(Ref<RenderSceneBuffersRD> scene_buffers,
+	void _pass_temporal_denoise(const Ref<RenderSceneBuffersRD> &scene_buffers,
 								const Vector2i &size);
-	void _pass_composite(Ref<RenderSceneBuffersRD> scene_buffers,
+	void _pass_composite(const Ref<RenderSceneBuffersRD> &scene_buffers,
 						 RenderSceneData *scene_data,
 						 const Vector2i &size);
 
 	// Helper to convert Godot matrix to float[16] for push constants.
-	static void projection_to_floats(const Projection &proj, float out[16]);
-	static void transform_to_floats(const Transform3D &xform, float out[16]);
+	static void _projection_to_floats(const Projection &proj, float out[16]);
+	static void _transform_to_floats(const Transform3D &xform, float out[16]);
 
 	void _cleanup_shaders();
 

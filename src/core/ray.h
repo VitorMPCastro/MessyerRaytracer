@@ -49,8 +49,7 @@ struct Ray {
 
 	// Default constructor: ray at origin pointing nowhere.
 	Ray()
-		: origin(), direction(), inv_direction(),
-		  t_min(0.001f), t_max(FLT_MAX), flags(0) {
+		: t_min(0.001f), t_max(FLT_MAX), flags(0) {
 		dir_sign[0] = dir_sign[1] = dir_sign[2] = 0;
 	}
 
@@ -77,10 +76,10 @@ struct Ray {
 private:
 	// Compute cached values from direction. Called once in constructor.
 	void _precompute() {
-		const float EPS = 1e-9f;
-		auto safe_inv = [EPS](float d) -> float {
-			return (std::fabs(d) < EPS)
-				? ((d < 0.0f) ? (-1.0f / EPS) : (1.0f / EPS))
+		const float eps = 1e-9f;  // NOLINT(readability-identifier-naming)
+		auto safe_inv = [eps](float d) -> float {
+			return (std::fabs(d) < eps)
+				? ((d < 0.0f) ? (-1.0f / eps) : (1.0f / eps))
 				: (1.0f / d);
 		};
 		inv_direction = Vector3(
@@ -91,5 +90,9 @@ private:
 		dir_sign[0] = (direction.x < 0.0f) ? 1 : 0;
 		dir_sign[1] = (direction.y < 0.0f) ? 1 : 0;
 		dir_sign[2] = (direction.z < 0.0f) ? 1 : 0;
+
+		RT_ASSERT(inv_direction.is_finite(), "Precomputed inv_direction must be finite");
+		RT_ASSERT(dir_sign[0] <= 1 && dir_sign[1] <= 1 && dir_sign[2] <= 1,
+			"dir_sign components must be 0 or 1");
 	}
 };

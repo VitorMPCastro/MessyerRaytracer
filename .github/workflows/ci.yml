@@ -9,6 +9,19 @@ on:
   merge_group:
 
 jobs:
+  lint:
+    name: Lint (Convention Checks)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: false  # Lint only needs our src/, not godot-cpp
+
+      - name: Run project convention linter
+        shell: bash
+        run: python tools/lint.py
+
   build:
     strategy:
       fail-fast: false
@@ -43,16 +56,7 @@ jobs:
         with:
           submodules: true
 
-      # Lint
-      #- name: Setup clang-format
-      #  shell: bash
-      #  run: |
-      #    python -m pip install clang-format
-      #- name: Run clang-format
-      #  shell: bash
-      #  run: |
-      #    clang-format src/** --dry-run --Werror
-
+      # Lint (clang-format is handled separately; project conventions run in the lint job above)
       # Add linux x86_32 toolchain
       - name: Install multilib support
         if: ${{ matrix.target.platform == 'linux' && matrix.target.arch == 'x86_32' }}

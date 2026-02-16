@@ -50,7 +50,7 @@ public:
 	};
 
 private:
-	static RayTracerServer *singleton_;
+	static RayTracerServer *singleton_; // NOLINT(readability-identifier-naming)
 
 	// ---- Registered mesh data ----
 	struct RegisteredMesh {

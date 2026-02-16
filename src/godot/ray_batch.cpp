@@ -2,6 +2,7 @@
 
 #include "ray_batch.h"
 #include "raytracer_server.h"
+#include "core/asserts.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -99,7 +100,10 @@ void RayBatch::cast() {
 	ERR_FAIL_NULL_MSG(server, "RayBatch::cast: RayTracerServer singleton is null");
 	ERR_FAIL_COND_MSG(rays_.empty(), "RayBatch::cast: no rays added");
 
+	RT_ASSERT(mode_ == MODE_NEAREST || mode_ == MODE_ANY_HIT, "cast: invalid mode");
+
 	int count = static_cast<int>(rays_.size());
+	RT_ASSERT(count > 0, "cast: ray count must be positive after empty check");
 
 	RayQuery query;
 	query.rays          = rays_.data();
@@ -179,6 +183,8 @@ int RayBatch::get_hit_layers(int index) const {
 
 Dictionary RayBatch::get_result(int index) const {
 	ERR_FAIL_INDEX_V(index, static_cast<int>(hits_.size()), Dictionary());
+	RT_ASSERT(!hits_.empty(), "get_result: results vector must not be empty");
+	RT_ASSERT_BOUNDS(index, static_cast<int>(hits_.size()));
 	const Intersection &h = hits_[index];
 	Dictionary d;
 	d["hit"] = h.hit();
@@ -238,6 +244,10 @@ float RayBatch::get_elapsed_ms() const {
 }
 
 Dictionary RayBatch::get_stats() const {
+	RT_ASSERT(stats_.hits <= stats_.rays_cast || stats_.rays_cast == 0,
+		"get_stats: hits must not exceed rays_cast");
+	RT_ASSERT_FINITE(stats_.avg_tri_tests_per_ray());
+
 	Dictionary d;
 	d["rays_cast"] = static_cast<int>(stats_.rays_cast);
 	d["tri_tests"] = static_cast<int>(stats_.tri_tests);

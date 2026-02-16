@@ -86,24 +86,24 @@ public:
 		depth_ = 0;
 
 		// Pre-allocate worst-case node count: 2N - 1 for N leaves, +1 for safety.
-		nodes_.resize(2 * tri_count_);
+		nodes_.resize(static_cast<size_t>(2) * tri_count_);
 		node_count_ = 0;
 
 		// Create root node encompassing all triangles.
-		uint32_t root = alloc_node();
+		uint32_t root = _alloc_node();
 		nodes_[root].left_first = 0;
 		nodes_[root].count = tri_count_;
-		compute_bounds(root);
+		_compute_bounds(root);
 
 		// Recursively subdivide using SAH.
-		subdivide(root, 0);
+		_subdivide(root, 0);
 
 		// Reorder nodes into DFS layout for cache-friendly traversal.
 		// After this: left child = parent_index + 1 (implicit), left_first = right child index.
-		reorder_dfs();
+		_reorder_dfs();
 
 		// Compute per-node subtree layer masks (bottom-up) for layer-based culling.
-		compute_subtree_masks(triangles);
+		_compute_subtree_masks(triangles);
 
 		// Trim unused node slots.
 		nodes_.resize(node_count_);
@@ -122,11 +122,11 @@ public:
 	Intersection cast_ray(const Ray &r, const std::vector<Triangle> &triangles,
 			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
 		Intersection closest;
-		if (!built_ || nodes_.empty()) return closest;
+		if (!built_ || nodes_.empty()) { return closest; }
 		RT_ASSERT_VALID_RAY(r);
 		RT_ASSERT(!triangles.empty(), "BVH::cast_ray called with empty triangle array");
 
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 
 		// Test root AABB — rays that miss the entire scene exit here.
 		float root_tmin, root_tmax;
@@ -150,15 +150,15 @@ public:
 		int iterations = 0;
 
 		while (sp > 0) {
-			if (++iterations > MAX_ITERATIONS) break;
+			if (++iterations > MAX_ITERATIONS) { break; }
 			RT_ASSERT(sp <= 64, "BVH traversal stack overflow in cast_ray");
 			StackEntry entry = stack[--sp];
 
 			// EARLY EXIT: this subtree's nearest possible hit is farther
 			// than what we've already found. Skip without re-testing AABB.
-			if (entry.tmin > closest.t) continue;
+			if (entry.tmin > closest.t) { continue; }
 
-			if (stats) stats->bvh_nodes_visited++;
+			if (stats) { stats->bvh_nodes_visited++; }
 
 			const BVHNode &node = nodes_[entry.idx];
 
@@ -166,8 +166,8 @@ public:
 				// Test each triangle in the leaf, filtering by layer mask.
 				for (uint32_t j = 0; j < node.count; j++) {
 					const Triangle &tri = all_tris[node.left_first + j];
-					if ((tri.layers & query_mask) == 0) continue;
-					if (stats) stats->tri_tests++;
+					if ((tri.layers & query_mask) == 0) { continue; }
+					if (stats) { stats->tri_tests++; }
 					if (tri.intersect(r, closest)) {
 						closest.hit_layers = tri.layers;
 					}
@@ -206,7 +206,7 @@ public:
 			}
 		}
 
-		if (stats && closest.hit()) stats->hits++;
+		if (stats && closest.hit()) { stats->hits++; }
 		return closest;
 	}
 
@@ -218,11 +218,11 @@ public:
 	// Used for shadow rays, line-of-sight checks, audio occlusion.
 	bool any_hit(const Ray &r, const std::vector<Triangle> &triangles,
 			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
-		if (!built_ || nodes_.empty()) return false;
+		if (!built_ || nodes_.empty()) { return false; }
 		RT_ASSERT_VALID_RAY(r);
 		RT_ASSERT(!triangles.empty(), "BVH::any_hit called with empty triangle array");
 
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 
 		float root_tmin, root_tmax;
 		if (!ray_intersects_aabb(r, nodes_[0].bounds, root_tmin, root_tmax)) {
@@ -239,25 +239,25 @@ public:
 		int iterations = 0;
 
 		while (sp > 0) {
-			if (++iterations > MAX_ITERATIONS) break;
+			if (++iterations > MAX_ITERATIONS) { break; }
 			RT_ASSERT(sp <= 64, "BVH traversal stack overflow in any_hit");
 			uint32_t node_idx = stack[--sp];
 			const BVHNode &node = nodes_[node_idx];
 
-			if (stats) stats->bvh_nodes_visited++;
+			if (stats) { stats->bvh_nodes_visited++; }
 
 			float tmin, tmax;
-			if (!ray_intersects_aabb(r, node.bounds, tmin, tmax)) continue;
+			if (!ray_intersects_aabb(r, node.bounds, tmin, tmax)) { continue; }
 
 			if (node.is_leaf()) {
 				// Test each triangle, filtering by layer mask.
 				for (uint32_t j = 0; j < node.count; j++) {
 					const Triangle &tri = all_tris[node.left_first + j];
-					if ((tri.layers & query_mask) == 0) continue;
-					if (stats) stats->tri_tests++;
+					if ((tri.layers & query_mask) == 0) { continue; }
+					if (stats) { stats->tri_tests++; }
 					Intersection temp;
 					if (tri.intersect(r, temp)) {
-						if (stats) stats->hits++;
+						if (stats) { stats->hits++; }
 						return true; // Early exit!
 					}
 				}
@@ -267,10 +267,12 @@ public:
 				// Skip children whose subtree has no matching layers.
 				uint32_t right_idx = node.left_first;
 				uint32_t left_idx = node_idx + 1;
-				if ((nodes_[right_idx].subtree_layer_mask & query_mask) != 0)
+				if ((nodes_[right_idx].subtree_layer_mask & query_mask) != 0) {
 					stack[sp++] = right_idx;
-				if ((nodes_[left_idx].subtree_layer_mask & query_mask) != 0)
+				}
+				if ((nodes_[left_idx].subtree_layer_mask & query_mask) != 0) {
 					stack[sp++] = left_idx;
+				}
 			}
 		}
 
@@ -290,12 +292,12 @@ public:
 	void cast_ray_packet4(const Ray *rays, Intersection *results, int count,
 			const std::vector<Triangle> &triangles, RayStats *stats = nullptr,
 			uint32_t query_mask = 0xFFFFFFFF) const {
-		if (!built_ || nodes_.empty() || count <= 0) return;
+		if (!built_ || nodes_.empty() || count <= 0) { return; }
 		RT_ASSERT(count >= 1 && count <= 4, "BVH::cast_ray_packet4: count must be 1-4");
 		RT_ASSERT_NOT_NULL(rays);
 		RT_ASSERT_NOT_NULL(results);
 
-		if (stats) stats->rays_cast += count;
+		if (stats) { stats->rays_cast += count; }
 
 		const Triangle *all_tris = triangles.data();
 
@@ -317,32 +319,32 @@ public:
 		int iterations = 0;
 
 		while (sp > 0) {
-			if (++iterations > MAX_ITERATIONS) break;
+			if (++iterations > MAX_ITERATIONS) { break; }
 
 			// Clamp stack pointer to prevent buffer overflow from corrupted data.
-			if (sp > 63) sp = 63;
+			if (sp > 63) { sp = 63; }
 
 			uint32_t node_idx = stack[--sp];
 
 			// Bounds-check node index to prevent out-of-range access.
-			if (node_idx >= node_count_) break;
+			if (node_idx >= node_count_) { break; }
 
 			const BVHNode &node = nodes_[node_idx];
 
 			// Packet AABB test: returns bitmask of which rays hit this node.
 			int hit_mask = packet_intersects_aabb(packet, node.bounds);
-			if (hit_mask == 0) continue;
+			if (hit_mask == 0) { continue; }
 
-			if (stats) stats->bvh_nodes_visited++;
+			if (stats) { stats->bvh_nodes_visited++; }
 
 			if (node.is_leaf()) {
 				// Test each active ray against the leaf's triangles, with layer filtering.
 				for (int i = 0; i < count; i++) {
-					if (!(hit_mask & (1 << i))) continue;
+					if (!(hit_mask & (1 << i))) { continue; }
 					for (uint32_t j = 0; j < node.count; j++) {
 						const Triangle &tri = all_tris[node.left_first + j];
-						if ((tri.layers & query_mask) == 0) continue;
-						if (stats) stats->tri_tests++;
+						if ((tri.layers & query_mask) == 0) { continue; }
+						if (stats) { stats->tri_tests++; }
 						if (tri.intersect(rays[i], results[i])) {
 							results[i].hit_layers = tri.layers;
 							packet.update_best_t(i, results[i].t);
@@ -364,7 +366,7 @@ public:
 
 		if (stats) {
 			for (int i = 0; i < count; i++) {
-				if (results[i].hit()) stats->hits++;
+				if (results[i].hit()) { stats->hits++; }
 			}
 		}
 	}
@@ -392,8 +394,9 @@ public:
 	//   Since children always come after parents in DFS order,
 	//   reverse iteration processes children before parents.
 	void refit(const std::vector<Triangle> &triangles) {
-		if (!built_ || nodes_.empty()) return;
+		if (!built_ || nodes_.empty()) { return; }
 		RT_ASSERT(!triangles.empty(), "BVH::refit called with empty triangle array");
+		RT_ASSERT(node_count_ <= nodes_.size(), "BVH::refit: node_count_ exceeds allocated nodes");
 
 		// Process nodes in reverse DFS order (children before parents).
 		for (int i = static_cast<int>(node_count_) - 1; i >= 0; i--) {
@@ -445,7 +448,7 @@ private:
 
 	// ---- Node allocation ----
 
-	uint32_t alloc_node() {
+	uint32_t _alloc_node() {
 		RT_ASSERT(node_count_ < nodes_.size(), "BVH node pool exhausted");
 		uint32_t idx = node_count_++;
 		nodes_[idx] = BVHNode{};
@@ -463,8 +466,8 @@ private:
 	// before recursing, so the memory layout interleaves subtrees. After DFS reorder,
 	// a left-first traversal (the common case with front-to-back ordering) accesses
 	// nodes in sequential memory order, maximizing L1/L2 cache hits.
-	void reorder_dfs() {
-		if (node_count_ < 3) return; // Need at least root + 2 children
+	void _reorder_dfs() {
+		if (node_count_ < 3) { return; } // Need at least root + 2 children
 
 		std::vector<BVHNode> new_nodes(node_count_);
 		std::vector<uint32_t> remap(node_count_, UINT32_MAX);
@@ -517,7 +520,9 @@ private:
 	// Each leaf's mask = OR of its triangle layer masks.
 	// Each internal node's mask = OR of both children's masks.
 	// This lets traversal skip entire subtrees that have no matching layers.
-	void compute_subtree_masks(const std::vector<Triangle> &triangles) {
+	void _compute_subtree_masks(const std::vector<Triangle> &triangles) {
+		RT_ASSERT(!triangles.empty(), "BVH::_compute_subtree_masks called with empty triangle array");
+		RT_ASSERT(node_count_ > 0, "BVH::_compute_subtree_masks: no nodes to process");
 		for (int i = static_cast<int>(node_count_) - 1; i >= 0; i--) {
 			BVHNode &node = nodes_[i];
 			if (node.is_leaf()) {
@@ -536,9 +541,10 @@ private:
 	}
 
 	// Compute tight AABB for all triangles belonging to a node.
-	void compute_bounds(uint32_t node_idx) {
+	void _compute_bounds(uint32_t node_idx) {
 		BVHNode &node = nodes_[node_idx];
 		RT_ASSERT(node.count > 0, "Cannot compute bounds for empty node");
+		RT_ASSERT_NOT_NULL(tris_);
 
 		Vector3 mn = tris_[node.left_first].v0;
 		Vector3 mx = mn;
@@ -555,17 +561,17 @@ private:
 
 		// Pad zero-size dimensions slightly to avoid degenerate AABBs
 		Vector3 size = mx - mn;
-		const float PAD = 1e-5f;
-		if (size.x < PAD) { mn.x -= PAD; mx.x += PAD; }
-		if (size.y < PAD) { mn.y -= PAD; mx.y += PAD; }
-		if (size.z < PAD) { mn.z -= PAD; mx.z += PAD; }
+		const float pad = 1e-5f;  // NOLINT(readability-identifier-naming)
+		if (size.x < pad) { mn.x -= pad; mx.x += pad; }
+		if (size.y < pad) { mn.y -= pad; mx.y += pad; }
+		if (size.z < pad) { mn.z -= pad; mx.z += pad; }
 
 		node.bounds = godot::AABB(mn, mx - mn);
 	}
 
 	// Surface area of an AABB. Used by SAH to estimate ray-hit probability.
 	// SA(box) / SA(parent) = probability that a random ray entering parent hits box.
-	static float surface_area(const godot::AABB &box) {
+	static float _surface_area(const godot::AABB &box) {
 		Vector3 s = box.size;
 		return 2.0f * (s.x * s.y + s.y * s.z + s.z * s.x);
 	}
@@ -580,7 +586,9 @@ private:
 
 	// Find the best axis and position to split a node's triangles.
 	// Uses binned SAH: O(N) per node instead of O(N²).
-	SplitResult find_best_split(uint32_t node_idx) {
+	SplitResult _find_best_split(uint32_t node_idx) {
+		RT_ASSERT(node_idx < node_count_, "BVH::_find_best_split: node_idx out of range");
+		RT_ASSERT_NOT_NULL(tris_);
 		const BVHNode &node = nodes_[node_idx];
 		SplitResult best;
 
@@ -599,8 +607,8 @@ private:
 			cmax.z = std::fmax(cmax.z, c.z);
 		}
 
-		float parent_sa = surface_area(node.bounds);
-		if (parent_sa <= 0.0f) return best;
+		float parent_sa = _surface_area(node.bounds);
+		if (parent_sa <= 0.0f) { return best; }
 		float inv_parent_sa = 1.0f / parent_sa;
 
 		// Try splitting along each axis (X=0, Y=1, Z=2).
@@ -608,7 +616,7 @@ private:
 			float axis_min = (axis == 0) ? cmin.x : (axis == 1) ? cmin.y : cmin.z;
 			float axis_max = (axis == 0) ? cmax.x : (axis == 1) ? cmax.y : cmax.z;
 
-			if (axis_max - axis_min < 1e-6f) continue; // Flat along this axis.
+			if (axis_max - axis_min < 1e-6f) { continue; } // Flat along this axis.
 
 			// ---- Assign triangles to bins based on centroid position ----
 			struct Bin {
@@ -654,7 +662,7 @@ private:
 						init = true;
 					}
 					count += bins[i].count;
-					left_area[i] = init ? surface_area(running) : 0.0f;
+						left_area[i] = init ? _surface_area(running) : 0.0f;
 					left_count[i] = count;
 				}
 			}
@@ -670,14 +678,14 @@ private:
 						init = true;
 					}
 					count += bins[i].count;
-					right_area[i - 1] = init ? surface_area(running) : 0.0f;
+						right_area[i - 1] = init ? _surface_area(running) : 0.0f;
 					right_count[i - 1] = count;
 				}
 			}
 
 			// ---- Evaluate SAH cost for each split position ----
 			for (int i = 0; i < NUM_BINS - 1; i++) {
-				if (left_count[i] == 0 || right_count[i] == 0) continue;
+				if (left_count[i] == 0 || right_count[i] == 0) { continue; }
 
 				// SAH: C = C_trav + (SA_L/SA_P * N_L + SA_R/SA_P * N_R) * C_isect
 				// With C_trav = 1.0, C_isect = 1.0:
@@ -697,20 +705,21 @@ private:
 
 	// ---- Recursive subdivision ----
 
-	void subdivide(uint32_t node_idx, uint32_t depth) {
+	void _subdivide(uint32_t node_idx, uint32_t depth) {
+		RT_ASSERT(node_idx < node_count_, "BVH::_subdivide: node_idx out of range");
 		BVHNode &node = nodes_[node_idx];
 
 		// Track max depth for diagnostics.
-		if (depth > depth_) depth_ = depth;
+		if (depth > depth_) { depth_ = depth; }
 
 		// Base case: few enough triangles to make a leaf.
-		if (node.count <= MAX_LEAF_SIZE) return;
+		if (node.count <= MAX_LEAF_SIZE) { return; }
 
-		SplitResult split = find_best_split(node_idx);
+		SplitResult split = _find_best_split(node_idx);
 
 		// If no beneficial split found (SAH says leaf is cheaper), stop.
 		float leaf_cost = static_cast<float>(node.count);
-		if (split.axis == -1 || split.cost >= leaf_cost) return;
+		if (split.axis == -1 || split.cost >= leaf_cost) { return; }
 
 		// ---- Partition triangles (Lomuto partition scheme) ----
 		// Triangles with centroid < split.pos go to left child.
@@ -735,8 +744,8 @@ private:
 		}
 
 		// ---- Create child nodes (allocated as a consecutive pair) ----
-		uint32_t left_idx = alloc_node();
-		uint32_t right_idx = alloc_node();
+		uint32_t left_idx = _alloc_node();
+		uint32_t right_idx = _alloc_node();
 		RT_ASSERT(right_idx == left_idx + 1,
 			"BVH children must be consecutive (got non-consecutive allocation)");
 
@@ -745,18 +754,18 @@ private:
 
 		nodes_[left_idx].left_first = first;
 		nodes_[left_idx].count = left_count;
-		compute_bounds(left_idx);
+		_compute_bounds(left_idx);
 
 		nodes_[right_idx].left_first = mid;
 		nodes_[right_idx].count = right_count;
-		compute_bounds(right_idx);
+		_compute_bounds(right_idx);
 
 		// Convert this node from leaf to internal.
 		node.left_first = left_idx;
 		node.count = 0;
 
 		// Recurse into children.
-		subdivide(left_idx, depth + 1);
-		subdivide(right_idx, depth + 1);
+		_subdivide(left_idx, depth + 1);
+		_subdivide(right_idx, depth + 1);
 	}
 };

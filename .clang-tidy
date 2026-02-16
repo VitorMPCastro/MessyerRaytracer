@@ -1,0 +1,103 @@
+# .clang-tidy — Static analysis and naming convention enforcement.
+#
+# Run with:  clang-tidy src/**/*.cpp src/**/*.h -- -Isrc/ -Igodot-cpp/include/ -Igodot-cpp/gen/include/ -Igodot-cpp/gdextension/ -std=c++17
+# Or via clangd (which reads this automatically).
+#
+# This config enforces the naming conventions from CONTRIBUTION_GUIDELINES.md
+# and catches common bugs. It does NOT replace tools/lint.py which checks
+# project-specific conventions (Tiger Style, file headers, GPU structs, etc.).
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -bugprone-unhandled-self-assignment,
+  misc-non-copyable-objects,
+  misc-unused-using-decls,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  performance-for-range-copy,
+  performance-implicit-conversion-in-loop,
+  performance-unnecessary-value-param,
+  readability-braces-around-statements,
+  readability-const-return-type,
+  readability-identifier-naming,
+  readability-redundant-member-init
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: 'src/.*'
+
+CheckOptions:
+  # --- Class / Struct ---
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+
+  # --- Enum types ---
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+
+  # --- Enum constants: UPPER_CASE ---
+  - key: readability-identifier-naming.EnumConstantCase
+    value: UPPER_CASE
+
+  # --- Functions / Methods: lower_case ---
+  # Allow _ prefix for Godot virtuals and private helpers (_ready, _precompute, etc.)
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMethodPrefix
+    value: '_'
+  - key: readability-identifier-naming.PrivateMethodCase
+    value: lower_case
+
+  # --- Member variables: lower_case with trailing _ ---
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.MemberSuffix
+    value: '_'
+  # Exempt public members of POD structs (Ray, Intersection, etc.)
+  - key: readability-identifier-naming.PublicMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PublicMemberSuffix
+    value: ''
+
+  # --- Local variables: lower_case ---
+  # Note: SIMD math code uses domain-standard names like E1x, V0y — these are
+  # suppressed inline via NOLINT rather than relaxing the global rule.
+  - key: readability-identifier-naming.LocalVariableCase
+    value: lower_case
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  # Allow _param style for constructor params that shadow members
+  - key: readability-identifier-naming.ParameterPrefix
+    value: ''
+
+  # --- Constants: UPPER_CASE ---
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: UPPER_CASE
+  # StaticConstant: allow lower_case too for Godot StringName statics
+  - key: readability-identifier-naming.StaticConstantCase
+    value: aNy_CasE
+
+  # --- Macros: UPPER_CASE (our RT_ prefix convention) ---
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+
+  # --- Namespace: allow CamelCase ---
+  # We use CamelCase namespaces as module groupings (ShadePass, TextureSampler)
+  - key: readability-identifier-naming.NamespaceCase
+    value: aNy_CasE
+
+  # --- Global functions / variables ---
+  # Global functions may have _ prefix (free helper functions)
+  - key: readability-identifier-naming.GlobalFunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: aNy_CasE

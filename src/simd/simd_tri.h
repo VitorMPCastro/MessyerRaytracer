@@ -106,9 +106,11 @@ inline bool simd_intersect_nearest(const Ray &r, const Triangle *tris, int count
 		av0x[i] = tris[i].v0.x;    av0y[i] = tris[i].v0.y;    av0z[i] = tris[i].v0.z;
 	}
 
+	// NOLINTBEGIN(readability-identifier-naming) — SIMD math uses standard notation
 	__m128 E1x = _mm_load_ps(ae1x), E1y = _mm_load_ps(ae1y), E1z = _mm_load_ps(ae1z);
 	__m128 E2x = _mm_load_ps(ae2x), E2y = _mm_load_ps(ae2y), E2z = _mm_load_ps(ae2z);
 	__m128 V0x = _mm_load_ps(av0x), V0y = _mm_load_ps(av0y), V0z = _mm_load_ps(av0z);
+	// NOLINTEND(readability-identifier-naming)
 
 	// ---- Step 1: pvec = direction × edge2 ----
 	__m128 px, py, pz;
@@ -148,7 +150,7 @@ inline bool simd_intersect_nearest(const Ray &r, const Triangle *tris, int count
 
 	// ---- Find closest valid hit ----
 	int mask = _mm_movemask_ps(valid);
-	if (mask == 0) return false;
+	if (mask == 0) { return false; }
 
 	// Extract t values, pick the smallest valid lane.
 	// Masked lanes are set to a large value so they lose the comparison.
@@ -207,9 +209,11 @@ inline bool simd_intersect_any(const Ray &r, const Triangle *tris, int count) {
 		av0x[i] = tris[i].v0.x;    av0y[i] = tris[i].v0.y;    av0z[i] = tris[i].v0.z;
 	}
 
+	// NOLINTBEGIN(readability-identifier-naming) — SIMD math uses standard notation
 	__m128 E1x = _mm_load_ps(ae1x), E1y = _mm_load_ps(ae1y), E1z = _mm_load_ps(ae1z);
 	__m128 E2x = _mm_load_ps(ae2x), E2y = _mm_load_ps(ae2y), E2z = _mm_load_ps(ae2z);
 	__m128 V0x = _mm_load_ps(av0x), V0y = _mm_load_ps(av0y), V0z = _mm_load_ps(av0z);
+	// NOLINTEND(readability-identifier-naming)
 
 	__m128 px, py, pz;
 	simd_cross(dx, dy, dz, E2x, E2y, E2z, px, py, pz);

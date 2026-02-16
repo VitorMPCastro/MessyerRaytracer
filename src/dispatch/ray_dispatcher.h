@@ -60,7 +60,7 @@ public:
 
 		// Upload to GPU if the pipeline is initialized (not is_available(),
 		// which also requires scene_uploaded_ — chicken-and-egg on first build).
-		if (should_use_gpu() && gpu_caster_.is_initialized()) {
+		if (_should_use_gpu() && gpu_caster_.is_initialized()) {
 			gpu_caster_.upload_scene(scene_.triangles, scene_.bvh);
 		}
 	}
@@ -92,7 +92,7 @@ public:
 	// Will the next dispatch actually use the GPU?
 	// Useful for choosing which stats format to print.
 	bool using_gpu() const {
-		return should_use_gpu() && gpu_caster_.is_available();
+		return _should_use_gpu() && gpu_caster_.is_available();
 	}
 
 	// ========================================================================
@@ -298,6 +298,8 @@ public:
 	}
 
 	void submit_gpu_async_any_hit(const Ray *rays, int count) {
+		RT_ASSERT_NOT_NULL(rays);
+		RT_ASSERT(count >= 0, "submit_gpu_async_any_hit: count must be non-negative");
 		if (using_gpu()) {
 			if (count >= MIN_BATCH_FOR_SORTING) {
 				async_perm_.clear();
@@ -375,7 +377,7 @@ private:
 	// The O(N log N) sort cost needs enough rays for warp coherence savings to pay off.
 	static constexpr int MIN_BATCH_FOR_SORTING = 256;
 
-	bool should_use_gpu() const {
+	bool _should_use_gpu() const {
 		switch (backend_) {
 			case Backend::GPU:  return true;
 			case Backend::AUTO: return gpu_caster_.is_available();

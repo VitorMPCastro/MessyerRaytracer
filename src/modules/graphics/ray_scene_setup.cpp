@@ -5,6 +5,7 @@
 // and quality presets from C++.
 
 #include "ray_scene_setup.h"
+#include "core/asserts.h"
 
 #include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/classes/panorama_sky_material.hpp>
@@ -39,6 +40,8 @@ void RaySceneSetup::_notification(int p_what) {
 // ============================================================================
 
 void RaySceneSetup::_ensure_nodes() {
+	RT_ASSERT(is_inside_tree(), "_ensure_nodes called before node is in scene tree");
+
 	// ---- Environment resource ----
 	if (environment_.is_null()) {
 		environment_.instantiate();
@@ -67,6 +70,9 @@ void RaySceneSetup::_ensure_nodes() {
 		sun_->set_name("ManagedSun");
 		add_child(sun_);
 	}
+
+	RT_ASSERT(environment_.is_valid(), "Environment must be created after _ensure_nodes");
+	RT_ASSERT_NOT_NULL(world_env_);
 }
 
 // ============================================================================
@@ -74,7 +80,11 @@ void RaySceneSetup::_ensure_nodes() {
 // ============================================================================
 
 void RaySceneSetup::apply() {
+	RT_ASSERT(is_inside_tree(), "apply() requires node to be in scene tree");
+
 	_ensure_nodes();
+
+	RT_ASSERT(environment_.is_valid(), "Environment resource must exist before applying settings");
 	_apply_sky();
 	_apply_environment();
 	_apply_gi();
@@ -101,6 +111,9 @@ void RaySceneSetup::apply() {
 // ============================================================================
 
 void RaySceneSetup::apply_preset(int preset) {
+	RT_ASSERT(preset >= 0, "Preset index must be non-negative");
+	RT_ASSERT(preset <= static_cast<int>(PRESET_ULTRA), "Preset index out of range");
+
 	switch (static_cast<QualityPreset>(preset)) {
 
 	case PRESET_LOW:
@@ -223,6 +236,9 @@ void RaySceneSetup::apply_preset(int preset) {
 // ============================================================================
 
 void RaySceneSetup::_apply_sky() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for sky configuration");
+	RT_ASSERT(sky_.is_valid(), "Sky resource must exist for sky configuration");
+
 	if (use_procedural_sky_) {
 		Ref<ProceduralSkyMaterial> sky_mat;
 		sky_mat.instantiate();
@@ -261,6 +277,9 @@ void RaySceneSetup::_apply_environment() {
 // ============================================================================
 
 void RaySceneSetup::_apply_gi() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for GI configuration");
+	RT_ASSERT(gi_mode_ >= GI_NONE && gi_mode_ <= GI_VOXEL_GI, "GI mode out of valid range");
+
 	switch (gi_mode_) {
 	case GI_SDFGI:
 		environment_->set_sdfgi_enabled(true);
@@ -272,9 +291,7 @@ void RaySceneSetup::_apply_gi() {
 		environment_->set_sdfgi_energy(1.0f);
 		break;
 	case GI_VOXEL_GI:
-		environment_->set_sdfgi_enabled(false);
 		// VoxelGI requires a VoxelGI node as a scene child — user must add it.
-		break;
 	case GI_NONE:
 	default:
 		environment_->set_sdfgi_enabled(false);
@@ -287,6 +304,9 @@ void RaySceneSetup::_apply_gi() {
 // ============================================================================
 
 void RaySceneSetup::_apply_tonemapping() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for tonemapping configuration");
+	RT_ASSERT_FINITE(tonemap_exposure_);
+
 	static const Environment::ToneMapper TONEMAP_MAP[] = {
 		Environment::TONE_MAPPER_LINEAR,
 		Environment::TONE_MAPPER_REINHARDT,
@@ -321,6 +341,9 @@ void RaySceneSetup::_apply_ssr() {
 // ============================================================================
 
 void RaySceneSetup::_apply_ssao() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for SSAO configuration");
+	RT_ASSERT_FINITE(ssao_radius_);
+
 	environment_->set_ssao_enabled(ssao_enabled_);
 	if (ssao_enabled_) {
 		environment_->set_ssao_radius(ssao_radius_);
@@ -350,6 +373,9 @@ void RaySceneSetup::_apply_ssil() {
 // ============================================================================
 
 void RaySceneSetup::_apply_glow() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for glow configuration");
+	RT_ASSERT_FINITE(glow_intensity_);
+
 	environment_->set_glow_enabled(glow_enabled_);
 	if (glow_enabled_) {
 		environment_->set_glow_intensity(glow_intensity_);
@@ -380,6 +406,9 @@ void RaySceneSetup::_apply_fog() {
 // ============================================================================
 
 void RaySceneSetup::_apply_dof() {
+	RT_ASSERT(camera_attrs_.is_valid(), "Camera attributes must exist for DOF configuration");
+	RT_ASSERT_FINITE(dof_focus_distance_);
+
 	if (dof_enabled_) {
 		camera_attrs_->set_dof_blur_far_enabled(true);
 		camera_attrs_->set_dof_blur_far_distance(dof_focus_distance_);
@@ -413,6 +442,9 @@ void RaySceneSetup::_apply_camera_attributes() {
 // ============================================================================
 
 void RaySceneSetup::_apply_sun() {
+	RT_ASSERT_NOT_NULL(sun_);
+	RT_ASSERT_POSITIVE(sun_energy_);
+
 	sun_->set_color(sun_color_);
 	sun_->set_param(Light3D::PARAM_ENERGY, sun_energy_);
 	sun_->set_param(Light3D::PARAM_SIZE, 0.5f); // Angular size for PCSS soft shadows

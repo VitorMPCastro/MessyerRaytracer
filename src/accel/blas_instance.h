@@ -54,12 +54,13 @@ struct BLASInstance {
 		obj.direction = inv_transform.basis.xform(world_ray.direction);
 		obj.t_min = world_ray.t_min;
 		obj.t_max = world_ray.t_max;
+		RT_ASSERT_VALID_RAY(obj);
 		return obj;
 	}
 
 	// Transform a hit result from object space back to world space.
 	void transform_hit_to_world(Intersection &hit) const {
-		if (!hit.hit()) return;
+		if (!hit.hit()) { return; }
 		RT_ASSERT(hit.t >= 0.0f, "Hit t must be non-negative before world transform");
 		hit.position = transform.xform(hit.position);
 		// Normal is transformed by the transpose of the inverse of the upper-left 3x3.
@@ -100,5 +101,7 @@ struct BLASInstance {
 		}
 
 		world_bounds = godot::AABB(wmin, wmax - wmin);
+		RT_ASSERT(world_bounds.size.x >= 0.0f && world_bounds.size.y >= 0.0f && world_bounds.size.z >= 0.0f,
+			"Computed world bounds must have non-negative size");
 	}
 };

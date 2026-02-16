@@ -73,6 +73,9 @@ public:
 
 	/// Generate a ray for pixel (x, y).  (0,0) is top-left.
 	inline Ray generate_ray(int x, int y) const {
+		RT_ASSERT(x >= 0 && x < width_, "generate_ray: x out of range");
+		RT_ASSERT(y >= 0 && y < height_, "generate_ray: y out of range");
+
 		float u = (2.0f * (static_cast<float>(x) + 0.5f) * inv_w_) - 1.0f;
 		float v = 1.0f - (2.0f * (static_cast<float>(y) + 0.5f) * inv_h_);
 
@@ -182,6 +185,9 @@ private:
 	// ---- Batch perspective (hot loop) ----
 
 	void _generate_perspective(Ray *out, int w, int h) const {
+		RT_ASSERT_NOT_NULL(out);
+		RT_ASSERT(w > 0 && h > 0, "_generate_perspective: dimensions must be positive");
+
 		int idx = 0;
 		for (int y = 0; y < h; y++) {
 			float v = 1.0f - (2.0f * (static_cast<float>(y) + 0.5f) * inv_h_);
@@ -199,6 +205,9 @@ private:
 	// ---- Batch orthographic ----
 
 	void _generate_orthographic(Ray *out, int w, int h) const {
+		RT_ASSERT_NOT_NULL(out);
+		RT_ASSERT(w > 0 && h > 0, "_generate_orthographic: dimensions must be positive");
+
 		Vector3 right = basis_.get_column(0);
 		Vector3 up    = basis_.get_column(1);
 

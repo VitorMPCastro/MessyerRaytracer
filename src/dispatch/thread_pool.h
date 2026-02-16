@@ -26,6 +26,7 @@
 
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include "core/asserts.h"
 
 class ThreadPool {
 public:
@@ -40,8 +41,11 @@ public:
 
 		workers_.reserve(num_threads);
 		for (uint32_t i = 0; i < num_threads; i++) {
-			workers_.emplace_back([this] { worker_loop(); });
+			workers_.emplace_back([this] { _worker_loop(); });
 		}
+
+		RT_ASSERT(thread_count_ > 0, "ThreadPool must have at least 1 worker thread");
+		RT_ASSERT(workers_.size() == thread_count_, "Worker count must match thread_count_");
 	}
 
 	~ThreadPool() {
@@ -51,7 +55,7 @@ public:
 		}
 		cv_work_.notify_all();
 		for (auto &t : workers_) {
-			if (t.joinable()) t.join();
+			if (t.joinable()) { t.join(); }
 		}
 	}
 
@@ -66,7 +70,7 @@ public:
 	// If count <= min_batch_size, runs on calling thread (no threading overhead).
 	void dispatch_and_wait(int count, int min_batch_size,
 			const std::function<void(int, int)> &func) {
-		if (count <= 0) return;
+		if (count <= 0) { return; }
 
 		// For small batches, don't bother with threading overhead.
 		if (count <= min_batch_size || thread_count_ == 0) {
@@ -134,7 +138,9 @@ private:
 	std::atomic<uint32_t> pending_chunks_{0};
 	uint64_t work_generation_ = 0;
 
-	void worker_loop() {
+	void _worker_loop() {
+		RT_ASSERT(thread_count_ > 0, "worker_loop: thread_count_ must be positive");
+		RT_ASSERT(!shutdown_, "worker_loop: pool must not be shut down at entry");
 		uint64_t last_gen = 0;
 
 		while (true) {
@@ -144,7 +150,7 @@ private:
 				cv_work_.wait(lock, [this, last_gen] {
 					return shutdown_ || work_generation_ > last_gen;
 				});
-				if (shutdown_) return;
+				if (shutdown_) { return; }
 				last_gen = work_generation_;
 			}
 
@@ -152,7 +158,7 @@ private:
 			while (true) {
 				uint32_t chunk = work_next_chunk_.fetch_add(1);
 				int start = chunk * work_chunk_size_;
-				if (start >= work_total_) break;
+				if (start >= work_total_) { break; }
 				int end = std::min(start + work_chunk_size_, work_total_);
 
 				try {

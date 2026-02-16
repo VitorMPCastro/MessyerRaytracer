@@ -33,19 +33,19 @@ using namespace godot;
 // during DLL load, before Godot's memory/string systems are ready).
 // ============================================================================
 
-const StringName &RTReflectionEffect::ctx_rt_reflections() {
+const StringName &RTReflectionEffect::_ctx_rt_reflections() {
 	static const StringName s("rt_reflections");
 	return s;
 }
-const StringName &RTReflectionEffect::tex_reflection_raw() {
+const StringName &RTReflectionEffect::_tex_reflection_raw() {
 	static const StringName s("raw");
 	return s;
 }
-const StringName &RTReflectionEffect::tex_reflection_denoised() {
+const StringName &RTReflectionEffect::_tex_reflection_denoised() {
 	static const StringName s("denoised");
 	return s;
 }
-const StringName &RTReflectionEffect::tex_reflection_history() {
+const StringName &RTReflectionEffect::_tex_reflection_history() {
 	static const StringName s("history");
 	return s;
 }
@@ -71,6 +71,7 @@ RTReflectionEffect::~RTReflectionEffect() {
 
 void RTReflectionEffect::_on_initialize_render() {
 	RT_ASSERT(rd() != nullptr, "RD must be valid for shader compilation");
+	RT_ASSERT(!trace_shader_.is_valid(), "Shaders already initialized — double init");
 
 	// Pass 1: Ray trace
 	trace_shader_ = compile_shader(RT_REFLECTIONS_GLSL, "rt_reflections");
@@ -118,12 +119,12 @@ void RTReflectionEffect::_on_render(RenderData *render_data,
 									RenderSceneData *scene_data,
 									const Vector2i &render_size) {
 	// Skip if BVH not uploaded or pipelines invalid.
-	if (!has_scene_data()) return;
-	if (!trace_pipeline_.is_valid()) return;
+	if (!has_scene_data()) { return; }
+	if (!trace_pipeline_.is_valid()) { return; }
 
 	// Handle render size changes.
 	if (render_size != current_render_size_) {
-		scene_buffers->clear_context(ctx_rt_reflections());
+		scene_buffers->clear_context(_ctx_rt_reflections());
 		current_render_size_ = render_size;
 		frame_count_ = 0; // Reset temporal accumulation on resize.
 	}
@@ -144,7 +145,7 @@ void RTReflectionEffect::_on_render(RenderData *render_data,
 // _ensure_textures — create intermediate textures via RenderSceneBuffersRD
 // ============================================================================
 
-void RTReflectionEffect::_ensure_textures(Ref<RenderSceneBuffersRD> scene_buffers,
+void RTReflectionEffect::_ensure_textures(const Ref<RenderSceneBuffersRD> &scene_buffers,
 										  const Vector2i &size) {
 	// Use RGBA16F for all intermediate textures (HDR-capable).
 	// Usage bits: SAMPLING (read as sampler) + STORAGE (write as image) + CAN_COPY (for history swap).
@@ -154,20 +155,20 @@ void RTReflectionEffect::_ensure_textures(Ref<RenderSceneBuffersRD> scene_buffer
 						   RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT |
 						   RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT;
 
-	if (!scene_buffers->has_texture(ctx_rt_reflections(), tex_reflection_raw())) {
-		scene_buffers->create_texture(ctx_rt_reflections(), tex_reflection_raw(),
+	if (!scene_buffers->has_texture(_ctx_rt_reflections(), _tex_reflection_raw())) {
+		scene_buffers->create_texture(_ctx_rt_reflections(), _tex_reflection_raw(),
 			format, usage, RenderingDevice::TEXTURE_SAMPLES_1,
 			size, 1, 1, true, false);
 	}
 
-	if (!scene_buffers->has_texture(ctx_rt_reflections(), tex_reflection_denoised())) {
-		scene_buffers->create_texture(ctx_rt_reflections(), tex_reflection_denoised(),
+	if (!scene_buffers->has_texture(_ctx_rt_reflections(), _tex_reflection_denoised())) {
+		scene_buffers->create_texture(_ctx_rt_reflections(), _tex_reflection_denoised(),
 			format, usage, RenderingDevice::TEXTURE_SAMPLES_1,
 			size, 1, 1, true, false);
 	}
 
-	if (!scene_buffers->has_texture(ctx_rt_reflections(), tex_reflection_history())) {
-		scene_buffers->create_texture(ctx_rt_reflections(), tex_reflection_history(),
+	if (!scene_buffers->has_texture(_ctx_rt_reflections(), _tex_reflection_history())) {
+		scene_buffers->create_texture(_ctx_rt_reflections(), _tex_reflection_history(),
 			format, usage, RenderingDevice::TEXTURE_SAMPLES_1,
 			size, 1, 1, true, false);
 	}
@@ -177,7 +178,7 @@ void RTReflectionEffect::_ensure_textures(Ref<RenderSceneBuffersRD> scene_buffer
 // Pass 1: Ray generation + BVH trace
 // ============================================================================
 
-void RTReflectionEffect::_pass_trace(Ref<RenderSceneBuffersRD> scene_buffers,
+void RTReflectionEffect::_pass_trace(const Ref<RenderSceneBuffersRD> &scene_buffers,
 									 RenderSceneData *scene_data,
 									 const Vector2i &size) {
 	begin_compute_label("RT Reflections: Trace");
@@ -189,7 +190,7 @@ void RTReflectionEffect::_pass_trace(Ref<RenderSceneBuffersRD> scene_buffers,
 	RID normal_roughness_tex = scene_buffers->get_texture(
 		StringName("forward_clustered"), StringName("normal_roughness"));
 	RID raw_output = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_raw(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_raw(), 0, 0, 1, 1);
 
 	// ---- Build uniform sets ----
 	// Set 0: Scene textures (depth + normal_roughness)
@@ -213,12 +214,12 @@ void RTReflectionEffect::_pass_trace(Ref<RenderSceneBuffersRD> scene_buffers,
 	TracePushConstants push{};
 	Projection inv_proj = scene_data->get_cam_projection().inverse();
 	Transform3D inv_view = scene_data->get_cam_transform();
-	projection_to_floats(inv_proj, push.inv_projection);
-	transform_to_floats(inv_view, push.inv_view);
+	_projection_to_floats(inv_proj, push.inv_projection);
+	_transform_to_floats(inv_view, push.inv_view);
 	push.roughness_threshold = roughness_threshold_;
 	push.ray_max_distance = ray_max_distance_;
 	push.frame_count = frame_count_;
-	push._pad = 0;
+	push.pad = 0;
 
 	PackedByteArray push_data;
 	push_data.resize(sizeof(TracePushConstants));
@@ -244,7 +245,7 @@ void RTReflectionEffect::_pass_trace(Ref<RenderSceneBuffersRD> scene_buffers,
 // Pass 2: Spatial denoise
 // ============================================================================
 
-void RTReflectionEffect::_pass_spatial_denoise(Ref<RenderSceneBuffersRD> scene_buffers,
+void RTReflectionEffect::_pass_spatial_denoise(const Ref<RenderSceneBuffersRD> &scene_buffers,
 											   const Vector2i &size) {
 	begin_compute_label("RT Reflections: Spatial Denoise");
 
@@ -254,9 +255,9 @@ void RTReflectionEffect::_pass_spatial_denoise(Ref<RenderSceneBuffersRD> scene_b
 	RID normal_roughness_tex = scene_buffers->get_texture(
 		StringName("forward_clustered"), StringName("normal_roughness"));
 	RID raw_tex = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_raw(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_raw(), 0, 0, 1, 1);
 	RID denoised_output = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_denoised(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_denoised(), 0, 0, 1, 1);
 
 	// Set 0: Inputs
 	TypedArray<RDUniform> set0_uniforms;
@@ -299,7 +300,7 @@ void RTReflectionEffect::_pass_spatial_denoise(Ref<RenderSceneBuffersRD> scene_b
 // Pass 3: Temporal accumulation
 // ============================================================================
 
-void RTReflectionEffect::_pass_temporal_denoise(Ref<RenderSceneBuffersRD> scene_buffers,
+void RTReflectionEffect::_pass_temporal_denoise(const Ref<RenderSceneBuffersRD> &scene_buffers,
 												const Vector2i &size) {
 	begin_compute_label("RT Reflections: Temporal Denoise");
 
@@ -307,9 +308,9 @@ void RTReflectionEffect::_pass_temporal_denoise(Ref<RenderSceneBuffersRD> scene_
 
 	RID depth_tex = scene_buffers->get_depth_layer(0);
 	RID denoised_tex = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_denoised(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_denoised(), 0, 0, 1, 1);
 	RID history_tex = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_history(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_history(), 0, 0, 1, 1);
 
 	// We write the temporal result back to the "denoised" texture and then
 	// copy denoised → history for the next frame. This avoids needing a 4th texture.
@@ -324,7 +325,7 @@ void RTReflectionEffect::_pass_temporal_denoise(Ref<RenderSceneBuffersRD> scene_
 
 	// Set 1: History + output (writes back to raw buffer as temp storage)
 	RID raw_output = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_raw(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_raw(), 0, 0, 1, 1);
 	TypedArray<RDUniform> set1_uniforms;
 	set1_uniforms.push_back(make_sampler_uniform(0, linear_sampler(), history_tex));
 	set1_uniforms.push_back(make_image_uniform(1, raw_output));
@@ -335,7 +336,7 @@ void RTReflectionEffect::_pass_temporal_denoise(Ref<RenderSceneBuffersRD> scene_
 	push.blend_factor = temporal_blend_;
 	push.depth_threshold = 0.1f;
 	push.frame_count = frame_count_;
-	push._pad = 0;
+	push.pad = 0;
 
 	PackedByteArray push_data;
 	push_data.resize(sizeof(TemporalDenoisePushConstants));
@@ -366,7 +367,7 @@ void RTReflectionEffect::_pass_temporal_denoise(Ref<RenderSceneBuffersRD> scene_
 // Pass 4: Composite into color buffer
 // ============================================================================
 
-void RTReflectionEffect::_pass_composite(Ref<RenderSceneBuffersRD> scene_buffers,
+void RTReflectionEffect::_pass_composite(const Ref<RenderSceneBuffersRD> &scene_buffers,
 										 RenderSceneData *scene_data,
 										 const Vector2i &size) {
 	begin_compute_label("RT Reflections: Composite");
@@ -378,7 +379,7 @@ void RTReflectionEffect::_pass_composite(Ref<RenderSceneBuffersRD> scene_buffers
 		StringName("forward_clustered"), StringName("normal_roughness"));
 	// Use the temporal output (stored in raw after pass 3)
 	RID reflection_tex = scene_buffers->get_texture_slice(
-		ctx_rt_reflections(), tex_reflection_raw(), 0, 0, 1, 1);
+		_ctx_rt_reflections(), _tex_reflection_raw(), 0, 0, 1, 1);
 	RID color_tex = scene_buffers->get_color_layer(0);
 
 	// Set 0: Scene textures
@@ -396,11 +397,11 @@ void RTReflectionEffect::_pass_composite(Ref<RenderSceneBuffersRD> scene_buffers
 	// Push constants
 	CompositePushConstants push{};
 	Transform3D inv_view = scene_data->get_cam_transform();
-	transform_to_floats(inv_view, push.inv_view);
+	_transform_to_floats(inv_view, push.inv_view);
 	push.roughness_threshold = roughness_threshold_;
 	push.reflection_intensity = reflection_intensity_;
 	push.f0 = fresnel_f0_;
-	push._pad = 0;
+	push.pad = 0;
 
 	PackedByteArray push_data;
 	push_data.resize(sizeof(CompositePushConstants));
@@ -424,7 +425,7 @@ void RTReflectionEffect::_pass_composite(Ref<RenderSceneBuffersRD> scene_buffers
 // Matrix conversion helpers
 // ============================================================================
 
-void RTReflectionEffect::projection_to_floats(const Projection &proj, float out[16]) {
+void RTReflectionEffect::_projection_to_floats(const Projection &proj, float out[16]) {
 	// Projection stores as columns[4], each is Vector4.
 	// GLSL mat4 is column-major: out[0..3] = column 0, etc.
 	for (int col = 0; col < 4; col++) {
@@ -436,7 +437,7 @@ void RTReflectionEffect::projection_to_floats(const Projection &proj, float out[
 	}
 }
 
-void RTReflectionEffect::transform_to_floats(const Transform3D &xform, float out[16]) {
+void RTReflectionEffect::_transform_to_floats(const Transform3D &xform, float out[16]) {
 	// Transform3D has basis (3x3) + origin. Convert to 4x4 column-major.
 	// Column 0 = basis.get_column(0), Column 3 = origin
 	const Basis &b = xform.basis;
@@ -458,7 +459,12 @@ void RTReflectionEffect::transform_to_floats(const Transform3D &xform, float out
 
 void RTReflectionEffect::_cleanup_shaders() {
 	RenderingDevice *device = rd();
-	if (!device) return;
+	if (!device) { return; }
+
+	RT_ASSERT(device != nullptr, "RD must be valid for shader cleanup");
+	RT_ASSERT(
+		trace_shader_.is_valid() || !trace_pipeline_.is_valid(),
+		"Pipeline without shader — inconsistent state");
 
 	if (composite_pipeline_.is_valid())         { device->free_rid(composite_pipeline_); composite_pipeline_ = RID(); }
 	if (temporal_denoise_pipeline_.is_valid())   { device->free_rid(temporal_denoise_pipeline_); temporal_denoise_pipeline_ = RID(); }

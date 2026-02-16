@@ -32,9 +32,12 @@
 #include "modules/graphics/ray_camera.h"
 #include "modules/graphics/ray_image.h"
 #include "core/intersection.h"
-#include "dispatch/thread_pool.h"
 
+#include <memory>
 #include <vector>
+
+// Forward declare — definition in dispatch/thread_pool.h, included in .cpp only.
+class ThreadPool;
 
 using namespace godot;
 
@@ -123,7 +126,7 @@ private:
 	std::vector<Intersection> hits_;
 	Ref<ImageTexture> output_texture_;
 	Ref<Image> output_image_;  // Cached for zero-alloc parallel conversion
-	ThreadPool pool_;           // Parallel raygen / shade / convert
+	std::unique_ptr<ThreadPool> pool_;  // Parallel raygen / shade / convert
 
 	// ---- Timing (ms) ----
 	float total_ms_   = 0.0f;

@@ -118,6 +118,9 @@ int RayTracerServer::register_mesh(Node *p_node) {
 		meshes_.emplace_back();
 	}
 
+	RT_ASSERT(mesh_id >= 0, "register_mesh: mesh_id must be non-negative");
+	RT_ASSERT(mesh_id < static_cast<int>(meshes_.size()), "register_mesh: mesh_id must be in range");
+
 	RegisteredMesh &entry = meshes_[mesh_id];
 	entry.node_id = static_cast<uint64_t>(mesh_inst->get_instance_id());
 	entry.object_tris = std::move(tris);
@@ -139,6 +142,9 @@ void RayTracerServer::unregister_mesh(int mesh_id) {
 	ERR_FAIL_COND_MSG(mesh_id < 0 || mesh_id >= static_cast<int>(meshes_.size()),
 		"RayTracerServer::unregister_mesh: invalid mesh_id");
 
+	RT_ASSERT_BOUNDS(mesh_id, static_cast<int>(meshes_.size()));
+	RT_ASSERT(meshes_[mesh_id].valid, "unregister_mesh: mesh must be currently registered");
+
 	std::unique_lock<std::shared_mutex> lock(scene_mutex_);
 
 	meshes_[mesh_id].valid = false;
@@ -150,6 +156,9 @@ void RayTracerServer::unregister_mesh(int mesh_id) {
 void RayTracerServer::build() {
 	std::unique_lock<std::shared_mutex> lock(scene_mutex_);
 	_rebuild_scene();
+
+	RT_ASSERT(!scene_dirty_, "build: scene should not be dirty after rebuild");
+	RT_ASSERT(dispatcher_.triangle_count() >= 0, "build: triangle count must be non-negative");
 
 	const auto &sc = dispatcher_.scene();
 	const char *backend_names[] = { "CPU", "GPU", "Auto" };
@@ -220,6 +229,9 @@ void RayTracerServer::submit(const RayQuery &query, RayQueryResult &result) {
 	ERR_FAIL_COND_MSG(query.rays == nullptr || query.count <= 0,
 		"RayTracerServer::submit: query has no rays");
 
+	RT_ASSERT_NOT_NULL(query.rays);
+	RT_ASSERT(query.count > 0, "submit: query count must be positive");
+
 	std::shared_lock<std::shared_mutex> lock(scene_mutex_);
 
 	auto t0 = std::chrono::steady_clock::now();
@@ -253,8 +265,11 @@ void RayTracerServer::submit(const RayQuery &query, RayQueryResult &result) {
 // ============================================================================
 
 void RayTracerServer::set_backend(int mode) {
-	if (mode < 0 || mode > static_cast<int>(BACKEND_AUTO)) return;
+	if (mode < 0 || mode > static_cast<int>(BACKEND_AUTO)) { return; }
+	RT_ASSERT(mode >= 0 && mode <= static_cast<int>(BACKEND_AUTO), "set_backend: mode in valid range");
 	backend_mode_ = static_cast<BackendMode>(mode);
+	RT_ASSERT(backend_mode_ >= BACKEND_CPU && backend_mode_ <= BACKEND_AUTO,
+		"set_backend: backend_mode_ must be valid after assignment");
 
 	switch (backend_mode_) {
 		case BACKEND_CPU:
@@ -292,6 +307,10 @@ bool RayTracerServer::is_gpu_available() const { return dispatcher_.gpu_availabl
 // ============================================================================
 
 Dictionary RayTracerServer::get_last_stats() const {
+	RT_ASSERT(last_stats_.hits <= last_stats_.rays_cast || last_stats_.rays_cast == 0,
+		"get_last_stats: hits must not exceed rays_cast");
+	RT_ASSERT_FINITE(last_cast_ms_);
+
 	Dictionary d;
 	d["rays_cast"] = static_cast<int64_t>(last_stats_.rays_cast);
 	d["tri_tests"] = static_cast<int64_t>(last_stats_.tri_tests);
@@ -311,7 +330,7 @@ int RayTracerServer::get_triangle_count() const { return dispatcher_.triangle_co
 int RayTracerServer::get_mesh_count() const {
 	int count = 0;
 	for (const auto &m : meshes_) {
-		if (m.valid) count++;
+		if (m.valid) { count++; }
 	}
 	return count;
 }
@@ -332,16 +351,16 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 	RT_ASSERT_NOT_NULL(mesh_inst);
 
 	Ref<Mesh> mesh = mesh_inst->get_mesh();
-	if (mesh.is_null()) return;
+	if (mesh.is_null()) { return; }
 
 	int surface_count = mesh->get_surface_count();
 
 	for (int surf = 0; surf < surface_count; surf++) {
 		Array arrays = mesh->surface_get_arrays(surf);
-		if (arrays.size() == 0) continue;
+		if (arrays.size() == 0) { continue; }
 
 		PackedVector3Array vertices = arrays[Mesh::ARRAY_VERTEX];
-		if (vertices.size() == 0) continue;
+		if (vertices.size() == 0) { continue; }
 
 		PackedInt32Array indices;
 		if (arrays.size() > Mesh::ARRAY_INDEX &&
@@ -443,7 +462,7 @@ void RayTracerServer::_rebuild_scene() {
 	tlas_.clear();
 
 	for (size_t i = 0; i < meshes_.size(); i++) {
-		if (!meshes_[i].valid) continue;
+		if (!meshes_[i].valid) { continue; }
 
 		// Validate that the node still exists.
 		Object *obj = ObjectDB::get_instance(ObjectID(meshes_[i].node_id));
@@ -480,6 +499,9 @@ void RayTracerServer::_rebuild_scene() {
 	scene_material_ids_.clear();
 	scene_triangle_uvs_.clear();
 
+	RT_ASSERT(dispatcher_.scene().triangles.empty(),
+		"_rebuild_scene: scene must be empty after clear");
+
 	const auto &instances = tlas_.instances();
 	uint32_t tri_offset = 0;
 
@@ -494,7 +516,7 @@ void RayTracerServer::_rebuild_scene() {
 	std::vector<BlasInfo> blas_info;
 	uint32_t mat_offset = 0;
 	for (size_t i = 0; i < meshes_.size(); i++) {
-		if (!meshes_[i].valid) continue;
+		if (!meshes_[i].valid) { continue; }
 		BlasInfo bi;
 		bi.layer_mask = meshes_[i].layer_mask;
 		bi.material_offset = mat_offset;
@@ -539,6 +561,9 @@ void RayTracerServer::_rebuild_scene() {
 	// 3. Build flat BVH (and upload to GPU if the pipeline is ready).
 	dispatcher_.build();
 	scene_dirty_ = false;
+
+	RT_ASSERT(scene_material_ids_.size() == scene_triangle_uvs_.size(),
+		"_rebuild_scene: material_ids and triangle_uvs count must match");
 }
 
 // ============================================================================
@@ -546,11 +571,18 @@ void RayTracerServer::_rebuild_scene() {
 // ============================================================================
 
 SceneShadeData RayTracerServer::get_scene_shade_data() const {
+	RT_ASSERT(scene_material_ids_.size() == scene_triangle_uvs_.size(),
+		"get_scene_shade_data: material_ids and triangle_uvs count must match");
+
 	SceneShadeData data;
 	data.materials      = scene_materials_.data();
 	data.material_count = static_cast<int>(scene_materials_.size());
 	data.material_ids   = scene_material_ids_.data();
 	data.triangle_count = static_cast<int>(scene_material_ids_.size());
 	data.triangle_uvs   = scene_triangle_uvs_.data();
+
+	RT_ASSERT(data.material_count >= 0, "get_scene_shade_data: material_count must be non-negative");
+	RT_ASSERT(data.triangle_count >= 0, "get_scene_shade_data: triangle_count must be non-negative");
+
 	return data;
 }

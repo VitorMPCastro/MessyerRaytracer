@@ -52,34 +52,36 @@ struct MeshBLAS {
 	// Cast a ray against this mesh's BVH (object-space ray).
 	Intersection cast_ray(const Ray &r, RayStats *stats = nullptr) const {
 		RT_ASSERT_VALID_RAY(r);
+		RT_ASSERT(!triangles.empty(), "MeshBLAS::cast_ray called on empty mesh");
 		if (bvh.is_built()) {
 			return bvh.cast_ray(r, triangles, stats);
 		}
 
 		// Brute force fallback
 		Intersection closest;
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 		for (const Triangle &tri : triangles) {
-			if (stats) stats->tri_tests++;
+			if (stats) { stats->tri_tests++; }
 			tri.intersect(r, closest);
 		}
-		if (stats && closest.hit()) stats->hits++;
+		if (stats && closest.hit()) { stats->hits++; }
 		return closest;
 	}
 
 	// Any-hit test (object-space ray).
 	bool any_hit(const Ray &r, RayStats *stats = nullptr) const {
 		RT_ASSERT_VALID_RAY(r);
+		RT_ASSERT(!triangles.empty(), "MeshBLAS::any_hit called on empty mesh");
 		if (bvh.is_built()) {
 			return bvh.any_hit(r, triangles, stats);
 		}
 
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 		Intersection temp;
 		for (const Triangle &tri : triangles) {
-			if (stats) stats->tri_tests++;
+			if (stats) { stats->tri_tests++; }
 			if (tri.intersect(r, temp)) {
-				if (stats) stats->hits++;
+				if (stats) { stats->hits++; }
 				return true;
 			}
 		}
@@ -88,15 +90,19 @@ struct MeshBLAS {
 
 	// AABB of the mesh in object space.
 	godot::AABB object_bounds() const {
+		RT_ASSERT(!bvh.is_built() || !bvh.get_nodes().empty(),
+			"Built BVH must have at least one node");
 		if (bvh.is_built() && !bvh.get_nodes().empty()) {
 			return bvh.get_nodes()[0].bounds;
 		}
 		// Compute from triangles
-		if (triangles.empty()) return godot::AABB();
+		if (triangles.empty()) { return godot::AABB(); }
 		godot::AABB bounds = triangles[0].aabb();
 		for (size_t i = 1; i < triangles.size(); i++) {
 			bounds = bounds.merge(triangles[i].aabb());
 		}
+		RT_ASSERT(bounds.size.x >= 0.0f && bounds.size.y >= 0.0f && bounds.size.z >= 0.0f,
+			"Computed object bounds have negative size");
 		return bounds;
 	}
 

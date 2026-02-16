@@ -87,6 +87,8 @@ public:
 	uint32_t add_instance(uint32_t blas_id, const godot::Transform3D &xform) {
 		RT_ASSERT(blas_id < static_cast<uint32_t>(blas_meshes_.size()),
 			"SceneTLAS::add_instance: blas_id out of range");
+		RT_ASSERT(!blas_meshes_[blas_id].triangles.empty(),
+			"SceneTLAS::add_instance: BLAS has no triangles");
 		uint32_t inst_id = static_cast<uint32_t>(instances_.size());
 		BLASInstance inst;
 		inst.blas_id = blas_id;
@@ -115,7 +117,7 @@ public:
 	// Build the TLAS. Call after adding/moving instances.
 	// Creates a BVH over instance world AABBs.
 	void build_tlas() {
-		if (instances_.empty()) return;
+		if (instances_.empty()) { return; }
 
 		// Create "proxy triangles" for the TLAS BVH builder.
 		// Each proxy is a degenerate triangle whose AABB matches the instance's world bounds.
@@ -137,7 +139,10 @@ public:
 			proxy_tris_[i] = Triangle(p0, p1, p2, static_cast<uint32_t>(i));
 		}
 
+		RT_ASSERT(proxy_tris_.size() == instances_.size(),
+			"Proxy triangle count must match instance count");
 		tlas_bvh_.build(proxy_tris_);
+		RT_ASSERT(tlas_bvh_.is_built(), "TLAS BVH should be built after build_tlas()");
 		built_ = true;
 	}
 
@@ -146,7 +151,10 @@ public:
 	//
 	// IMPORTANT: Update proxy triangles first so refit uses current positions.
 	void refit_tlas() {
-		if (!built_ || instances_.empty()) return;
+		if (!built_ || instances_.empty()) { return; }
+		RT_ASSERT(tlas_bvh_.is_built(), "Cannot refit TLAS that hasn't been built");
+		RT_ASSERT(proxy_tris_.size() == instances_.size(),
+			"Proxy triangle count must match instance count before refit");
 
 		// Update proxy triangles to match current instance world bounds.
 		for (size_t i = 0; i < instances_.size(); i++) {
@@ -172,15 +180,15 @@ public:
 
 		if (!built_) {
 			// No TLAS — brute force over all instances
-			return cast_ray_brute(world_ray, stats);
+			return _cast_ray_brute(world_ray, stats);
 		}
 
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 
 		// Traverse TLAS BVH to find candidate instances.
 		// Then for each candidate, transform ray into object space and test BLAS.
 		float root_tmin, root_tmax;
-		if (!ray_intersects_aabb(world_ray, tlas_bvh_.get_nodes()[0].bounds,
+		if (!_ray_intersects_aabb(world_ray, tlas_bvh_.get_nodes()[0].bounds,
 				root_tmin, root_tmax)) {
 			return closest;
 		}
@@ -195,9 +203,9 @@ public:
 		while (sp > 0) {
 			RT_ASSERT(sp <= 64, "TLAS traversal stack overflow in cast_ray");
 			StackEntry entry = stack[--sp];
-			if (entry.tmin > closest.t) continue;
+			if (entry.tmin > closest.t) { continue; }
 
-			if (stats) stats->bvh_nodes_visited++;
+			if (stats) { stats->bvh_nodes_visited++; }
 			const BVHNode &node = tlas_nodes[entry.idx];
 
 			if (node.is_leaf()) {
@@ -210,11 +218,11 @@ public:
 
 					// Quick AABB test before transforming ray
 					float inst_tmin, inst_tmax;
-					if (!ray_intersects_aabb(world_ray, inst.world_bounds,
+					if (!_ray_intersects_aabb(world_ray, inst.world_bounds,
 							inst_tmin, inst_tmax)) {
 						continue;
 					}
-					if (inst_tmin > closest.t) continue;
+					if (inst_tmin > closest.t) { continue; }
 
 					// Transform ray to object space
 					Ray obj_ray = inst.transform_ray_to_object(world_ray);
@@ -233,9 +241,9 @@ public:
 				uint32_t right = node.left_first;
 
 				float tmin_l, tmax_l, tmin_r, tmax_r;
-				bool hit_l = ray_intersects_aabb(world_ray, tlas_nodes[left].bounds,
+				bool hit_l = _ray_intersects_aabb(world_ray, tlas_nodes[left].bounds,
 						tmin_l, tmax_l) && tmin_l <= closest.t;
-				bool hit_r = ray_intersects_aabb(world_ray, tlas_nodes[right].bounds,
+				bool hit_r = _ray_intersects_aabb(world_ray, tlas_nodes[right].bounds,
 						tmin_r, tmax_r) && tmin_r <= closest.t;
 
 				if (hit_l && hit_r) {
@@ -254,19 +262,20 @@ public:
 			}
 		}
 
-		if (stats && closest.hit()) stats->hits++;
+		if (stats && closest.hit()) { stats->hits++; }
 		return closest;
 	}
 
 	// Any-hit world-space ray (two-level traversal with early exit).
 	bool any_hit(const Ray &world_ray, RayStats *stats = nullptr) const {
 		RT_ASSERT_VALID_RAY(world_ray);
-		if (!built_) return any_hit_brute(world_ray, stats);
+		if (!built_) { return _any_hit_brute(world_ray, stats); }
 
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
+		RT_ASSERT(!tlas_bvh_.get_nodes().empty(), "TLAS any_hit: BVH has no nodes despite being built");
 
 		float root_tmin, root_tmax;
-		if (!ray_intersects_aabb(world_ray, tlas_bvh_.get_nodes()[0].bounds,
+		if (!_ray_intersects_aabb(world_ray, tlas_bvh_.get_nodes()[0].bounds,
 				root_tmin, root_tmax)) {
 			return false;
 		}
@@ -281,10 +290,10 @@ public:
 			uint32_t node_idx = stack[--sp];
 			const BVHNode &node = tlas_nodes[node_idx];
 
-			if (stats) stats->bvh_nodes_visited++;
+			if (stats) { stats->bvh_nodes_visited++; }
 
 			float tmin, tmax;
-			if (!ray_intersects_aabb(world_ray, node.bounds, tmin, tmax)) continue;
+			if (!_ray_intersects_aabb(world_ray, node.bounds, tmin, tmax)) { continue; }
 
 			if (node.is_leaf()) {
 				for (uint32_t i = 0; i < node.count; i++) {
@@ -295,7 +304,7 @@ public:
 
 					Ray obj_ray = inst.transform_ray_to_object(world_ray);
 					if (mesh.any_hit(obj_ray, stats)) {
-						if (stats) stats->hits++;
+						if (stats) { stats->hits++; }
 						return true;
 					}
 				}
@@ -355,25 +364,25 @@ private:
 	bool built_ = false;
 
 	// AABB intersection for TLAS traversal (same as bvh.h's version).
-	static bool ray_intersects_aabb(const Ray &r, const godot::AABB &box,
+	static bool _ray_intersects_aabb(const Ray &r, const godot::AABB &box,
 			float &out_tmin, float &out_tmax) {
 		Vector3 bmin = box.position;
 		Vector3 bmax = bmin + box.size;
 
 		float tmin = (bmin.x - r.origin.x) * r.inv_direction.x;
 		float tmax = (bmax.x - r.origin.x) * r.inv_direction.x;
-		if (tmin > tmax) std::swap(tmin, tmax);
+		if (tmin > tmax) { std::swap(tmin, tmax); }
 
 		float tymin = (bmin.y - r.origin.y) * r.inv_direction.y;
 		float tymax = (bmax.y - r.origin.y) * r.inv_direction.y;
-		if (tymin > tymax) std::swap(tymin, tymax);
+		if (tymin > tymax) { std::swap(tymin, tymax); }
 
 		tmin = std::fmax(tmin, tymin);
 		tmax = std::fmin(tmax, tymax);
 
 		float tzmin = (bmin.z - r.origin.z) * r.inv_direction.z;
 		float tzmax = (bmax.z - r.origin.z) * r.inv_direction.z;
-		if (tzmin > tzmax) std::swap(tzmin, tzmax);
+		if (tzmin > tzmax) { std::swap(tzmin, tzmax); }
 
 		tmin = std::fmax(tmin, tzmin);
 		tmax = std::fmin(tmax, tzmax);
@@ -387,9 +396,12 @@ private:
 	}
 
 	// Brute-force fallback (no TLAS built)
-	Intersection cast_ray_brute(const Ray &world_ray, RayStats *stats) const {
+	Intersection _cast_ray_brute(const Ray &world_ray, RayStats *stats) const {
+		RT_ASSERT_VALID_RAY(world_ray);
+		RT_ASSERT(!blas_meshes_.empty() || instances_.empty(),
+			"_cast_ray_brute: instances exist but no meshes");
 		Intersection closest;
-		if (stats) stats->rays_cast++;
+		if (stats) { stats->rays_cast++; }
 		for (const auto &inst : instances_) {
 			const MeshBLAS &m = blas_meshes_[inst.blas_id];
 			Ray obj_ray = inst.transform_ray_to_object(world_ray);
@@ -400,17 +412,20 @@ private:
 				closest = hit;
 			}
 		}
-		if (stats && closest.hit()) stats->hits++;
+		if (stats && closest.hit()) { stats->hits++; }
 		return closest;
 	}
 
-	bool any_hit_brute(const Ray &world_ray, RayStats *stats) const {
-		if (stats) stats->rays_cast++;
+	bool _any_hit_brute(const Ray &world_ray, RayStats *stats) const {
+		RT_ASSERT_VALID_RAY(world_ray);
+		RT_ASSERT(!blas_meshes_.empty() || instances_.empty(),
+			"_any_hit_brute: instances exist but no meshes");
+		if (stats) { stats->rays_cast++; }
 		for (const auto &inst : instances_) {
 			const MeshBLAS &m = blas_meshes_[inst.blas_id];
 			Ray obj_ray = inst.transform_ray_to_object(world_ray);
 			if (m.any_hit(obj_ray, stats)) {
-				if (stats) stats->hits++;
+				if (stats) { stats->hits++; }
 				return true;
 			}
 		}

@@ -36,11 +36,11 @@ struct Triangle {
 	uint32_t layers;
 
 	Triangle()
-		: v0(), v1(), v2(), edge1(), edge2(), normal(), id(0), layers(0xFFFFFFFF) {}
+		: id(0), layers(0xFFFFFFFF) {}
 
-	Triangle(const Vector3 &a, const Vector3 &b, const Vector3 &c, uint32_t _id,
-			uint32_t _layers = 0xFFFFFFFF)
-		: v0(a), v1(b), v2(c), id(_id), layers(_layers) {
+	Triangle(const Vector3 &a, const Vector3 &b, const Vector3 &c, uint32_t p_id,
+			uint32_t p_layers = 0xFFFFFFFF)
+		: v0(a), v1(b), v2(c), id(p_id), layers(p_layers) {
 		RT_ASSERT(a.is_finite() && b.is_finite() && c.is_finite(),
 			"Triangle vertices must be finite");
 		edge1 = v1 - v0;
@@ -121,7 +121,11 @@ struct Triangle {
 			std::fmax(v0.y, std::fmax(v1.y, v2.y)),
 			std::fmax(v0.z, std::fmax(v1.z, v2.z))
 		);
-		return godot::AABB(mn, mx - mn);
+		RT_ASSERT(mn.is_finite() && mx.is_finite(), "AABB bounds must be finite");
+		Vector3 size = mx - mn;
+		RT_ASSERT(size.x >= 0.0f && size.y >= 0.0f && size.z >= 0.0f,
+			"AABB size must be non-negative");
+		return godot::AABB(mn, size);
 	}
 
 	// Centroid of the triangle (used for BVH splitting decisions).

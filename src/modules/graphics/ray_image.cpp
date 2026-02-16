@@ -1,10 +1,13 @@
 // ray_image.cpp — RayImage to_image conversion.
 
 #include "modules/graphics/ray_image.h"
+#include "core/asserts.h"
 #include <algorithm>
 
 Ref<Image> RayImage::to_image(Channel ch) const {
-	if (pixel_count_ == 0) return Ref<Image>();
+	RT_ASSERT_BOUNDS(static_cast<int>(ch), static_cast<int>(CHANNEL_COUNT));
+	RT_ASSERT(width_ >= 0 && height_ >= 0, "RayImage dimensions must be non-negative");
+	if (pixel_count_ == 0) { return Ref<Image>(); }
 
 	// Create or recreate the cached image if resolution changed.
 	if (cached_image_.is_null() || output_dirty_) {

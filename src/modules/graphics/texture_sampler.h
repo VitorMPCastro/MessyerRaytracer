@@ -8,6 +8,8 @@
 // For a production offline renderer this would use raw pixel data.
 // For our real-time preview at moderate resolutions this is adequate.
 
+#include "core/asserts.h"
+
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <cmath>
@@ -19,9 +21,13 @@ namespace TextureSampler {
 
 /// Nearest-neighbor sampling with repeat wrapping.
 inline Color sample_nearest(const Image *img, float u, float v) {
+	RT_ASSERT_NOT_NULL(img);
+	RT_ASSERT_FINITE(u);
+	RT_ASSERT_FINITE(v);
+
 	int w = img->get_width();
 	int h = img->get_height();
-	if (w <= 0 || h <= 0) return Color(1.0f, 0.0f, 1.0f); // magenta = error
+	if (w <= 0 || h <= 0) { return Color(1.0f, 0.0f, 1.0f); } // magenta = error
 
 	// Repeat wrap.
 	u = u - std::floor(u);
@@ -29,17 +35,21 @@ inline Color sample_nearest(const Image *img, float u, float v) {
 
 	int x = static_cast<int>(u * w) % w;
 	int y = static_cast<int>(v * h) % h;
-	if (x < 0) x += w;
-	if (y < 0) y += h;
+	if (x < 0) { x += w; }
+	if (y < 0) { y += h; }
 
 	return img->get_pixel(x, y);
 }
 
 /// Bilinear sampling with repeat wrapping.
 inline Color sample_bilinear(const Image *img, float u, float v) {
+	RT_ASSERT_NOT_NULL(img);
+	RT_ASSERT_FINITE(u);
+	RT_ASSERT_FINITE(v);
+
 	int w = img->get_width();
 	int h = img->get_height();
-	if (w <= 0 || h <= 0) return Color(1.0f, 0.0f, 1.0f);
+	if (w <= 0 || h <= 0) { return Color(1.0f, 0.0f, 1.0f); }
 
 	// Repeat wrap.
 	u = u - std::floor(u);

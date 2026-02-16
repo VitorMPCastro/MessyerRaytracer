@@ -28,6 +28,9 @@
 #include "api/ray_query.h"
 #include "api/scene_shade_data.h"
 
+// Forward declare — definition in accel/ray_scene.h
+struct RayScene;
+
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/vector3.hpp>
@@ -113,6 +116,13 @@ public:
 	/// Get a read-only view of the scene's material/UV data for shading.
 	/// Valid after build().  Pointers are stable until the next build().
 	virtual SceneShadeData get_shade_data() const = 0;
+
+	// ======== Scene data (for GPU upload) ========
+
+	/// Get a read-only reference to the underlying RayScene.
+	/// Used by CompositorEffects that need triangle/BVH data for GPU upload.
+	/// Valid after build(). The reference is stable until the next build().
+	virtual const RayScene *get_scene() const = 0;
 };
 
 /// Returns the global ray service backed by RayTracerServer.

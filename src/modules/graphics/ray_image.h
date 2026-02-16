@@ -25,6 +25,8 @@
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/variant/color.hpp>
+#include "core/asserts.h"
+
 #include <vector>
 #include <cstring>
 #include <algorithm>
@@ -55,7 +57,11 @@ public:
 
 	/// Allocate (or reallocate) all channels for the given resolution.
 	void resize(int width, int height) {
-		if (width == width_ && height == height_) return;
+		RT_ASSERT(width > 0 && height > 0, "RayImage::resize: dimensions must be positive");
+		RT_ASSERT(static_cast<int64_t>(width) * height <= (1 << 26),
+			"RayImage::resize: resolution exceeds safe limit");
+
+		if (width == width_ && height == height_) { return; }
 		width_  = width;
 		height_ = height;
 		pixel_count_ = width * height;
@@ -93,7 +99,7 @@ public:
 
 	/// Write a pixel to a channel. idx = y * width + x.
 	inline void write_pixel(Channel ch, int idx, float r, float g, float b, float a = 1.0f) {
-		float *p = channels_[ch].data() + idx * 4;
+		float *p = channels_[ch].data() + static_cast<ptrdiff_t>(idx) * 4;
 		p[0] = r;
 		p[1] = g;
 		p[2] = b;
@@ -102,7 +108,7 @@ public:
 
 	/// Write a pixel from a Color.
 	inline void write_pixel(Channel ch, int idx, const Color &c) {
-		float *p = channels_[ch].data() + idx * 4;
+		float *p = channels_[ch].data() + static_cast<ptrdiff_t>(idx) * 4;
 		p[0] = c.r;
 		p[1] = c.g;
 		p[2] = c.b;
@@ -111,7 +117,7 @@ public:
 
 	/// Read a pixel from a channel.
 	inline Color read_pixel(Channel ch, int idx) const {
-		const float *p = channels_[ch].data() + idx * 4;
+		const float *p = channels_[ch].data() + static_cast<ptrdiff_t>(idx) * 4;
 		return Color(p[0], p[1], p[2], p[3]);
 	}
 

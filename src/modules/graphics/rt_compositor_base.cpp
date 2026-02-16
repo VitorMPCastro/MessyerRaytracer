@@ -10,9 +10,8 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/core/class_db.hpp>
 
-#include "godot/raytracer_server.h"
+#include "api/ray_service.h"
 #include "accel/ray_scene.h"
-#include "accel/bvh.h"
 #include "core/triangle.h"
 #include "core/asserts.h"
 
@@ -44,28 +43,28 @@ RTCompositorBase::~RTCompositorBase() {
 
 void RTCompositorBase::_render_callback(int32_t p_effect_callback_type,
 										RenderData *p_render_data) {
-	if (!get_enabled() || !p_render_data) return;
+	if (!get_enabled() || !p_render_data) { return; }
 
 	// ---- Lazy initialization on first render ----
 	if (!render_initialized_) {
 		_initialize_render();
-		if (!render_initialized_) return; // Init failed
+		if (!render_initialized_) { return; } // Init failed
 	}
 
 	// ---- Get typed scene buffers ----
 	Ref<RenderSceneBuffers> buffers_base = p_render_data->get_render_scene_buffers();
-	if (buffers_base.is_null()) return;
+	if (buffers_base.is_null()) { return; }
 
 	Ref<RenderSceneBuffersRD> scene_buffers = Object::cast_to<RenderSceneBuffersRD>(buffers_base.ptr());
-	if (scene_buffers.is_null()) return;
+	if (scene_buffers.is_null()) { return; }
 
 	// ---- Get scene data (camera, projection) ----
 	RenderSceneData *scene_data = p_render_data->get_render_scene_data();
-	if (!scene_data) return;
+	if (!scene_data) { return; }
 
 	// ---- Get render size ----
 	Vector2i render_size = scene_buffers->get_internal_size();
-	if (render_size.x <= 0 || render_size.y <= 0) return;
+	if (render_size.x <= 0 || render_size.y <= 0) { return; }
 
 	// ---- Upload BVH if needed ----
 	upload_scene_to_shared_device();
@@ -79,6 +78,8 @@ void RTCompositorBase::_render_callback(int32_t p_effect_callback_type,
 // ============================================================================
 
 void RTCompositorBase::_initialize_render() {
+	RT_ASSERT(!render_initialized_, "_initialize_render called but already initialized");
+
 	// Get the shared rendering device (Godot's render thread).
 	RenderingServer *rs = RenderingServer::get_singleton();
 	if (!rs) {
@@ -99,6 +100,7 @@ void RTCompositorBase::_initialize_render() {
 	_on_initialize_render();
 
 	render_initialized_ = true;
+	RT_ASSERT_NOT_NULL(rd_);
 	UtilityFunctions::print("[RTCompositorBase] Render initialized on shared device");
 }
 
@@ -108,6 +110,7 @@ void RTCompositorBase::_initialize_render() {
 
 void RTCompositorBase::_create_samplers() {
 	RT_ASSERT(rd_ != nullptr, "RD must be set before creating samplers");
+	RT_ASSERT(!nearest_sampler_.is_valid(), "Samplers already created");
 
 	// Nearest-neighbor sampler.
 	{
@@ -179,17 +182,20 @@ RID RTCompositorBase::create_pipeline(const RID &shader) {
 }
 
 // ============================================================================
-// upload_scene_to_shared_device — upload BVH data from RayTracerServer
+// upload_scene_to_shared_device — upload BVH data via IRayService
 // ============================================================================
 
 void RTCompositorBase::upload_scene_to_shared_device() {
-	if (!rd_) return;
+	RT_ASSERT(render_initialized_, "Cannot upload scene before render initialization");
+	if (!rd_) { return; }
 
-	RayTracerServer *server = RayTracerServer::get_singleton();
-	if (!server) return;
+	IRayService *svc = get_ray_service();
+	if (!svc) { return; }
 
-	const RayScene &scene = server->scene();
-	if (scene.triangles.empty() || !scene.bvh.is_built()) return;
+	const RayScene *scene_ptr = svc->get_scene();
+	if (!scene_ptr) { return; }
+	const RayScene &scene = *scene_ptr;
+	if (scene.triangles.empty() || !scene.bvh.is_built()) { return; }
 
 	uint32_t tri_count = static_cast<uint32_t>(scene.triangles.size());
 	uint32_t node_count = static_cast<uint32_t>(scene.bvh.get_nodes().size());
@@ -252,6 +258,8 @@ void RTCompositorBase::upload_scene_to_shared_device() {
 	uploaded_tri_count_ = tri_count;
 	uploaded_node_count_ = node_count;
 	scene_uploaded_ = true;
+	RT_ASSERT(shared_triangle_buffer_.is_valid(), "Triangle buffer must be valid after upload");
+	RT_ASSERT(shared_bvh_node_buffer_.is_valid(), "BVH node buffer must be valid after upload");
 
 	UtilityFunctions::print("[RTCompositorBase] Uploaded to shared device: ",
 		static_cast<int>(tri_count), " tris, ",
@@ -263,7 +271,8 @@ void RTCompositorBase::upload_scene_to_shared_device() {
 // ============================================================================
 
 void RTCompositorBase::free_scene_buffers() {
-	if (!rd_) return;
+	RT_ASSERT_NOT_NULL(rd_);
+	if (!rd_) { return; }
 	if (shared_triangle_buffer_.is_valid()) {
 		rd_->free_rid(shared_triangle_buffer_);
 		shared_triangle_buffer_ = RID();
@@ -275,6 +284,9 @@ void RTCompositorBase::free_scene_buffers() {
 	scene_uploaded_ = false;
 	uploaded_tri_count_ = 0;
 	uploaded_node_count_ = 0;
+
+	RT_ASSERT(!shared_triangle_buffer_.is_valid(), "Triangle buffer must be freed");
+	RT_ASSERT(!shared_bvh_node_buffer_.is_valid(), "BVH node buffer must be freed");
 }
 
 // ============================================================================

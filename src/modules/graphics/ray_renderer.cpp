@@ -3,6 +3,8 @@
 #include "modules/graphics/ray_renderer.h"
 #include "modules/graphics/shade_pass.h"
 #include "api/ray_service.h"
+#include "dispatch/thread_pool.h"
+#include "core/asserts.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/engine.hpp>
@@ -17,7 +19,8 @@ using namespace godot;
 // Lifecycle
 // ============================================================================
 
-RayRenderer::RayRenderer() = default;
+RayRenderer::RayRenderer()
+	: pool_(std::make_unique<ThreadPool>()) {}
 RayRenderer::~RayRenderer() = default;
 
 // ============================================================================
@@ -80,6 +83,9 @@ Ref<Image> RayRenderer::get_image() const {
 // ============================================================================
 
 void RayRenderer::render_frame() {
+	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive");
+	RT_ASSERT_NOT_NULL(pool_.get());
+
 	using Clock = std::chrono::high_resolution_clock;
 	auto t_start = Clock::now();
 
@@ -133,15 +139,18 @@ IRayService *RayRenderer::_get_service() const {
 }
 
 Camera3D *RayRenderer::_resolve_camera() const {
-	if (camera_path_.is_empty()) return nullptr;
+	if (camera_path_.is_empty()) { return nullptr; }
 
 	Node *node = const_cast<RayRenderer *>(this)->get_node_or_null(camera_path_);
-	if (!node) return nullptr;
+	if (!node) { return nullptr; }
 
 	return Object::cast_to<Camera3D>(node);
 }
 
 void RayRenderer::_generate_rays(Camera3D *cam) {
+	RT_ASSERT_NOT_NULL(cam);
+	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive for ray generation");
+
 	int w = resolution_.x;
 	int h = resolution_.y;
 
@@ -149,19 +158,22 @@ void RayRenderer::_generate_rays(Camera3D *cam) {
 	camera_.setup(cam, w, h);
 
 	// Resize ray buffer if needed.
-	rays_.resize(w * h);
+	rays_.resize(static_cast<size_t>(w) * h);
 
 	// Parallel ray generation — split by row chunks.
 	// Each thread generates a contiguous strip of rows using the tile API.
 	// generate_ray() is pure math on read-only camera state → thread-safe.
-	pool_.dispatch_and_wait(h, 16, [this, w](int y_start, int y_end) {
+	pool_->dispatch_and_wait(h, 16, [this, w](int y_start, int y_end) {
 		camera_.generate_rays_tile(
-			rays_.data() + y_start * w,
+			rays_.data() + static_cast<ptrdiff_t>(y_start) * w,
 			0, y_start, w, y_end);
 	});
 }
 
 void RayRenderer::_trace_rays(IRayService *svc) {
+	RT_ASSERT_NOT_NULL(svc);
+	RT_ASSERT(!rays_.empty(), "Ray buffer must not be empty before tracing");
+
 	int count = static_cast<int>(rays_.size());
 	hits_.resize(count);
 
@@ -177,6 +189,9 @@ void RayRenderer::_trace_rays(IRayService *svc) {
 }
 
 void RayRenderer::_shade_results() {
+	RT_ASSERT(!hits_.empty(), "Hits buffer must not be empty before shading");
+	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive for shading");
+
 	int count = static_cast<int>(hits_.size());
 	int w = resolution_.x;
 	int h = resolution_.y;
@@ -205,7 +220,7 @@ void RayRenderer::_shade_results() {
 	const Intersection *hits_ptr = hits_.data();
 	Vector3 sun = sun_direction_;
 
-	pool_.dispatch_and_wait(count, 256, [&, ch, inv_depth_range, inv_pos_range, sun,
+	pool_->dispatch_and_wait(count, 256, [&, ch, inv_depth_range, inv_pos_range, sun,
 			rays_ptr, hits_ptr](int start, int end) {
 		for (int i = start; i < end; i++) {
 			ShadePass::shade_channel(framebuffer_, i, hits_ptr[i], rays_ptr[i],
@@ -215,11 +230,14 @@ void RayRenderer::_shade_results() {
 }
 
 void RayRenderer::_convert_output() {
+	RT_ASSERT_BOUNDS(render_channel_, static_cast<int>(RayImage::CHANNEL_COUNT));
+	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive for output conversion");
+
 	RayImage::Channel ch = static_cast<RayImage::Channel>(render_channel_);
 	int w = resolution_.x;
 	int h = resolution_.y;
 	int count = w * h;
-	if (count == 0) return;
+	if (count == 0) { return; }
 
 	// Ensure the cached output image has the right dimensions.
 	if (output_image_.is_null() ||
@@ -232,7 +250,7 @@ void RayRenderer::_convert_output() {
 	uint8_t *dst = output_image_->ptrw();
 	const float *src = framebuffer_.channel(ch);
 
-	pool_.dispatch_and_wait(count, 1024, [dst, src](int start, int end) {
+	pool_->dispatch_and_wait(count, 1024, [dst, src](int start, int end) {
 		for (int i = start; i < end; i++) {
 			int base = i * 4;
 			dst[base + 0] = static_cast<uint8_t>(
