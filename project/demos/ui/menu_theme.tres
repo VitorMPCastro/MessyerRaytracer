@@ -1,26 +1,26 @@
-[gd_resource type="Theme" format=3]
-
-[sub_resource type="StyleBoxFlat" id="PanelContainer_panel"]
-bg_color = Color(0.1, 0.1, 0.12, 0.94)
-corner_radius_top_left = 8
-corner_radius_top_right = 8
-corner_radius_bottom_left = 8
-corner_radius_bottom_right = 8
-content_margin_left = 18.0
-content_margin_top = 14.0
-content_margin_right = 18.0
-content_margin_bottom = 14.0
-border_width_left = 1
-border_width_top = 1
-border_width_right = 1
-border_width_bottom = 1
-border_color = Color(0.35, 0.45, 0.65, 0.6)
+[gd_resource type="Theme" format=3 uid="uid://d1rvf4424h8x4"]
 
 [sub_resource type="StyleBoxFlat" id="HSeparator_separator"]
 content_margin_top = 3.0
 content_margin_bottom = 3.0
 bg_color = Color(0.3, 0.35, 0.45, 0.4)
 
+[sub_resource type="StyleBoxFlat" id="PanelContainer_panel"]
+content_margin_left = 18.0
+content_margin_top = 14.0
+content_margin_right = 18.0
+content_margin_bottom = 14.0
+bg_color = Color(0.1, 0.1, 0.12, 0.94)
+border_width_left = 1
+border_width_top = 1
+border_width_right = 1
+border_width_bottom = 1
+border_color = Color(0.35, 0.45, 0.65, 0.6)
+corner_radius_top_left = 8
+corner_radius_top_right = 8
+corner_radius_bottom_right = 8
+corner_radius_bottom_left = 8
+
 [resource]
-PanelContainer/styles/panel = SubResource("PanelContainer_panel")
 HSeparator/styles/separator = SubResource("HSeparator_separator")
+PanelContainer/styles/panel = SubResource("PanelContainer_panel")

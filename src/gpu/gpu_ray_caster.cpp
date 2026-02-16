@@ -30,6 +30,7 @@
 #include <godot_cpp/core/memory.hpp>
 
 #include <cstring>
+#include <limits>
 #include <vector>
 
 using namespace godot;
@@ -203,9 +204,12 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 				g.left_max[0] = bmax.x; g.left_max[1] = bmax.y; g.left_max[2] = bmax.z;
 				g.left_idx = n.left_first;
 				g.left_count = n.count;
-				// Unreachable right child: inverted AABB (ray can never hit).
-				g.right_min[0] = 1e30f; g.right_min[1] = 1e30f; g.right_min[2] = 1e30f;
-				g.right_max[0] = -1e30f; g.right_max[1] = -1e30f; g.right_max[2] = -1e30f;
+				// Unreachable right child: NaN AABB (IEEE 754: NaN comparisons → false).
+				// NOTE: inverted AABB (min>max) does NOT work because the slab test's
+				// min/max swap undoes the inversion. NaN is the only safe sentinel.
+				const float qnan = std::numeric_limits<float>::quiet_NaN();
+				g.right_min[0] = qnan; g.right_min[1] = qnan; g.right_min[2] = qnan;
+				g.right_max[0] = qnan; g.right_max[1] = qnan; g.right_max[2] = qnan;
 				g.right_idx = 0;
 				g.right_count = 0;
 			} else {
@@ -448,38 +452,36 @@ void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT(rd_ != nullptr, "dispatch_rays_no_sync: rendering device is null");
 
-	// ---- Convert rays to GPU format (persistent buffer, no per-frame alloc) ----
-	gpu_rays_cache_.resize(static_cast<size_t>(count));
-	for (int i = 0; i < count; i++) {
-		const Ray &r = rays[i];
-		GPURayPacked &g = gpu_rays_cache_[static_cast<size_t>(i)];
-		g.origin[0] = r.origin.x; g.origin[1] = r.origin.y; g.origin[2] = r.origin.z;
-		g.t_max = r.t_max;
-		g.direction[0] = r.direction.x; g.direction[1] = r.direction.y; g.direction[2] = r.direction.z;
-		g.t_min = r.t_min;
-	}
-
 	// ---- Ensure ray/result buffers are large enough ----
 	ensure_ray_buffers(static_cast<uint32_t>(count));
 
-	// ---- Upload ray data (persistent staging buffer, no per-frame alloc) ----
+	// ---- Convert rays directly into upload buffer (single copy, no intermediate) ----
 	{
 		uint32_t byte_size = static_cast<uint32_t>(count * sizeof(GPURayPacked));
 		upload_cache_.resize(byte_size);
-		memcpy(upload_cache_.ptrw(), gpu_rays_cache_.data(), byte_size);
+		GPURayPacked *dst = reinterpret_cast<GPURayPacked *>(upload_cache_.ptrw());
+		for (int i = 0; i < count; i++) {
+			const Ray &r = rays[i];
+			GPURayPacked &g = dst[i];
+			g.origin[0] = r.origin.x; g.origin[1] = r.origin.y; g.origin[2] = r.origin.z;
+			g.t_max = r.t_max;
+			g.direction[0] = r.direction.x; g.direction[1] = r.direction.y; g.direction[2] = r.direction.z;
+			g.t_min = r.t_min;
+		}
 		rd_->buffer_update(ray_buffer_, 0, byte_size, upload_cache_);
 	}
 
 	// ---- Rebuild uniform set if needed ----
 	rebuild_uniform_set();
 
-	// ---- Push constants ----
+	// ---- Push constants (reuse cached PackedByteArray) ----
 	GPUPushConstants push{};
 	push.ray_count = static_cast<uint32_t>(count);
 	push.query_mask = query_mask;
-	PackedByteArray push_data;
-	push_data.resize(sizeof(GPUPushConstants));
-	memcpy(push_data.ptrw(), &push, sizeof(GPUPushConstants));
+	if (push_data_cache_.size() != sizeof(GPUPushConstants)) {
+		push_data_cache_.resize(sizeof(GPUPushConstants));
+	}
+	memcpy(push_data_cache_.ptrw(), &push, sizeof(GPUPushConstants));
 
 	// ---- Dispatch compute shader ----
 	uint32_t groups_x = (static_cast<uint32_t>(count) + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE;
@@ -487,7 +489,7 @@ void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &
 	int64_t compute_list = rd_->compute_list_begin();
 	rd_->compute_list_bind_compute_pipeline(compute_list, pipeline);
 	rd_->compute_list_bind_uniform_set(compute_list, uniform_set_, 0);
-	rd_->compute_list_set_push_constant(compute_list, push_data, sizeof(GPUPushConstants));
+	rd_->compute_list_set_push_constant(compute_list, push_data_cache_, sizeof(GPUPushConstants));
 	rd_->compute_list_dispatch(compute_list, groups_x, 1, 1);
 	rd_->compute_list_end();
 

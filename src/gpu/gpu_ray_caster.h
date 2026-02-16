@@ -134,8 +134,8 @@ private:
 
 	// ---- Persistent cache (avoid per-frame heap allocation) ----
 	// At 1280×960 these save ~130MB of alloc+free per frame.
-	std::vector<GPURayPacked> gpu_rays_cache_;           // Ray conversion buffer
 	godot::PackedByteArray upload_cache_;                 // Upload staging buffer
+	godot::PackedByteArray push_data_cache_;              // Push constants (16 bytes, reused)
 
 	// Stored for position reconstruction in collect_nearest.
 	// The new compact GPUIntersectionPacked (32 bytes) omits position to save

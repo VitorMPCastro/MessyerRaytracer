@@ -155,6 +155,7 @@ vec3 safe_inv_direction(vec3 dir) {
 // we skip it entirely without loading the node data (saves a 64-byte fetch).
 
 const uint STACK_DEPTH = 24u;
+const uint MAX_ITERATIONS = 65536u;  // Safety: prevent infinite loops from any cause.
 shared uint  shared_stack_node[128 * STACK_DEPTH];
 shared float shared_stack_tmin[128 * STACK_DEPTH];
 
@@ -223,7 +224,9 @@ void main() {
     shared_stack_tmin[stack_base]     = -1e30;  // guaranteed < best_t
     sp = 1;
 
-    while (sp > 0) {
+    uint iterations = 0u;
+    while (sp > 0 && iterations < MAX_ITERATIONS) {
+        iterations++;
         sp--;
         uint node_idx    = shared_stack_node[stack_base + uint(sp)];
         float entry_tmin = shared_stack_tmin[stack_base + uint(sp)];
@@ -271,23 +274,32 @@ void main() {
 
         if (push_l && push_r) {
             // Push far child first (LIFO → near child processed first).
+            // Clamp sp to prevent shared memory corruption on pathological trees.
             if (tmin_l < tmin_r) {
-                shared_stack_node[stack_base + uint(sp)] = r_idx;
-                shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
-                shared_stack_node[stack_base + uint(sp)] = l_idx;
-                shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
+                if (sp < int(STACK_DEPTH) - 1) {
+                    shared_stack_node[stack_base + uint(sp)] = r_idx;
+                    shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
+                    shared_stack_node[stack_base + uint(sp)] = l_idx;
+                    shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
+                }
             } else {
+                if (sp < int(STACK_DEPTH) - 1) {
+                    shared_stack_node[stack_base + uint(sp)] = l_idx;
+                    shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
+                    shared_stack_node[stack_base + uint(sp)] = r_idx;
+                    shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
+                }
+            }
+        } else if (push_l) {
+            if (sp < int(STACK_DEPTH)) {
                 shared_stack_node[stack_base + uint(sp)] = l_idx;
                 shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
+            }
+        } else if (push_r) {
+            if (sp < int(STACK_DEPTH)) {
                 shared_stack_node[stack_base + uint(sp)] = r_idx;
                 shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
             }
-        } else if (push_l) {
-            shared_stack_node[stack_base + uint(sp)] = l_idx;
-            shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
-        } else if (push_r) {
-            shared_stack_node[stack_base + uint(sp)] = r_idx;
-            shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
         }
     }
 
