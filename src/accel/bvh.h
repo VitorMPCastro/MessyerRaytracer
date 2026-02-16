@@ -287,10 +287,15 @@ public:
 		if (stats) stats->rays_cast += count;
 
 		const Triangle *all_tris = triangles.data();
-		RayPacket4 packet = RayPacket4::build(rays, count);
 
-		// Initialize results' t values so the packet's best_t tracks them.
-		// (best_t was already set to t_max in build, which is correct for fresh results)
+		// Reset every result slot to "miss" BEFORE traversal.
+		// Without this, rays that don't hit any geometry leave stale data
+		// from the previous frame (the caller's buffer is reused across frames).
+		for (int i = 0; i < count; i++) {
+			results[i].set_miss();
+		}
+
+		RayPacket4 packet = RayPacket4::build(rays, count);
 
 		// Stack-based traversal, same as single-ray but with packet AABB test.
 		uint32_t stack[64];

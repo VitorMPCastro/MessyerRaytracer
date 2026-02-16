@@ -35,7 +35,9 @@
 using namespace godot;
 
 // Workgroup size — must match local_size_x in the GLSL shader.
-static constexpr uint32_t WORKGROUP_SIZE = 64;
+// 128 gives better occupancy/latency hiding on Turing+ GPUs vs 64,
+// while staying under shared memory limits (128 × 24 × 4B × 2 = 24KB < 48KB).
+static constexpr uint32_t WORKGROUP_SIZE = 128;
 
 // ============================================================================
 // Constructor / Destructor
@@ -161,19 +163,96 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 		g._pad3 = 0.0f;
 	}
 
-	// ---- Convert BVH nodes to GPU format ----
+	// ---- Convert BVH to Aila-Laine dual-AABB format ----
+	// Based on "Understanding the Efficiency of Ray Traversal on GPUs"
+	// (Aila & Laine, HPG 2009) and tinybvh's BVH_GPU layout.
+	//
+	// KEY OPTIMIZATION: Each node stores both children's AABBs.
+	// During traversal, one memory fetch gives both children's bounds → test
+	// both children and decide which to visit, all from one cache line.
+	// The standard format requires TWO fetches (load child0, load child1).
+	//
+	// This halves memory latency during traversal — the #1 GPU bottleneck.
 	const std::vector<BVHNode> &nodes = bvh.get_nodes();
-	std::vector<GPUBVHNodePacked> gpu_nodes(nodes.size());
+	std::vector<GPUBVHNodeWide> gpu_nodes;
+	gpu_nodes.reserve(nodes.size());
+
+	// Build a mapping from old node indices to new wide-node indices.
+	// Only internal nodes become wide nodes. Leaf data is embedded in parent.
+	// But for simplicity and correctness, we map ALL nodes (leaves get a slot
+	// so parent pointers stay valid; leaf nodes are never actually traversed as
+	// wide nodes since the parent's count field tells the shader it's a leaf).
+	std::vector<uint32_t> node_map(nodes.size(), 0);
+	uint32_t wide_count = 0;
+	for (size_t i = 0; i < nodes.size(); i++) {
+		node_map[i] = wide_count++;
+	}
+	gpu_nodes.resize(wide_count);
+
 	for (size_t i = 0; i < nodes.size(); i++) {
 		const BVHNode &n = nodes[i];
-		GPUBVHNodePacked &g = gpu_nodes[i];
-		// Godot AABB: position = min corner, size = extent
-		Vector3 bmin = n.bounds.position;
-		Vector3 bmax = bmin + n.bounds.size;
-		g.bounds_min[0] = bmin.x; g.bounds_min[1] = bmin.y; g.bounds_min[2] = bmin.z;
-		g.left_first = n.left_first;
-		g.bounds_max[0] = bmax.x; g.bounds_max[1] = bmax.y; g.bounds_max[2] = bmax.z;
-		g.count = n.count;
+		GPUBVHNodeWide &g = gpu_nodes[node_map[i]];
+
+		if (n.is_leaf()) {
+			if (i == 0) {
+				// Root-as-leaf: small scene. Wrap as pseudo-internal so shader
+				// traversal works (shader always processes root as internal).
+				Vector3 bmin = n.bounds.position;
+				Vector3 bmax = bmin + n.bounds.size;
+				g.left_min[0] = bmin.x; g.left_min[1] = bmin.y; g.left_min[2] = bmin.z;
+				g.left_max[0] = bmax.x; g.left_max[1] = bmax.y; g.left_max[2] = bmax.z;
+				g.left_idx = n.left_first;
+				g.left_count = n.count;
+				// Unreachable right child: inverted AABB (ray can never hit).
+				g.right_min[0] = 1e30f; g.right_min[1] = 1e30f; g.right_min[2] = 1e30f;
+				g.right_max[0] = -1e30f; g.right_max[1] = -1e30f; g.right_max[2] = -1e30f;
+				g.right_idx = 0;
+				g.right_count = 0;
+			} else {
+				// Non-root leaf: its parent already stores its AABB + tri info.
+				// This entry is never read during traversal — fill with safe zeros.
+				g = {};
+			}
+			continue;
+		}
+
+		// Internal node: DFS layout → left child = i+1, right child = left_first
+		uint32_t left = static_cast<uint32_t>(i) + 1;
+		uint32_t right = n.left_first;
+		RT_ASSERT(left < nodes.size(), "Left child out of bounds");
+		RT_ASSERT(right < nodes.size(), "Right child out of bounds");
+
+		const BVHNode &lc = nodes[left];
+		const BVHNode &rc = nodes[right];
+
+		// Left child AABB
+		Vector3 lmin = lc.bounds.position;
+		Vector3 lmax = lmin + lc.bounds.size;
+		g.left_min[0] = lmin.x; g.left_min[1] = lmin.y; g.left_min[2] = lmin.z;
+		g.left_max[0] = lmax.x; g.left_max[1] = lmax.y; g.left_max[2] = lmax.z;
+
+		// Right child AABB
+		Vector3 rmin = rc.bounds.position;
+		Vector3 rmax = rmin + rc.bounds.size;
+		g.right_min[0] = rmin.x; g.right_min[1] = rmin.y; g.right_min[2] = rmin.z;
+		g.right_max[0] = rmax.x; g.right_max[1] = rmax.y; g.right_max[2] = rmax.z;
+
+		// Child info: if leaf, store first_tri + count. If internal, store node index.
+		if (lc.is_leaf()) {
+			g.left_idx = lc.left_first;
+			g.left_count = lc.count;
+		} else {
+			g.left_idx = node_map[left];
+			g.left_count = 0;
+		}
+
+		if (rc.is_leaf()) {
+			g.right_idx = rc.left_first;
+			g.right_count = rc.count;
+		} else {
+			g.right_idx = node_map[right];
+			g.right_count = 0;
+		}
 	}
 
 	// ---- Free old scene buffers ----
@@ -188,10 +267,10 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 		triangle_buffer_ = rd_->storage_buffer_create(byte_size, data);
 	}
 
-	// ---- Upload BVH node buffer ----
+	// ---- Upload Aila-Laine BVH node buffer ----
 	{
 		PackedByteArray data;
-		uint32_t byte_size = static_cast<uint32_t>(gpu_nodes.size() * sizeof(GPUBVHNodePacked));
+		uint32_t byte_size = static_cast<uint32_t>(gpu_nodes.size() * sizeof(GPUBVHNodeWide));
 		data.resize(byte_size);
 		memcpy(data.ptrw(), gpu_nodes.data(), byte_size);
 		bvh_node_buffer_ = rd_->storage_buffer_create(byte_size, data);
@@ -202,7 +281,7 @@ void GPURayCaster::upload_scene(const std::vector<Triangle> &triangles, const BV
 
 	UtilityFunctions::print("[GPU RayCaster] Uploaded: ",
 		static_cast<int>(triangles.size()), " triangles, ",
-		static_cast<int>(nodes.size()), " BVH nodes");
+		static_cast<int>(gpu_nodes.size()), " Aila-Laine BVH nodes");
 }
 
 // ============================================================================
@@ -226,17 +305,19 @@ void GPURayCaster::cast_rays(const Ray *rays, Intersection *results, int count,
 		reinterpret_cast<const GPUIntersectionPacked *>(result_data.ptr());
 
 	// ---- Convert GPU results back to Intersection structs ----
+	// Position is reconstructed from ray origin + direction * t instead of
+	// being stored in the GPU output. This saves 33% readback bandwidth.
 	for (int i = 0; i < count; i++) {
 		const GPUIntersectionPacked &g = gpu_results[i];
 		Intersection &hit = results[i];
 		hit.t = g.t;
-		hit.position = Vector3(g.position[0], g.position[1], g.position[2]);
 		hit.normal = Vector3(g.normal[0], g.normal[1], g.normal[2]);
 		hit.u = g.bary_u;
 		hit.v = g.bary_v;
 		if (g.prim_id >= 0) {
 			hit.prim_id = static_cast<uint32_t>(g.prim_id);
 			hit.hit_layers = g.hit_layers;
+			hit.position = rays[i].origin + rays[i].direction * g.t;
 		} else {
 			hit.set_miss();
 		}
@@ -288,6 +369,7 @@ void GPURayCaster::submit_async(const Ray *rays, int count, uint32_t query_mask)
 	RT_ASSERT_NOT_NULL(rays);
 	dispatch_rays_no_sync(rays, count, pipeline_, query_mask);
 	pending_count_ = count;
+	pending_rays_ = rays;
 	pending_async_ = true;
 }
 
@@ -297,6 +379,7 @@ void GPURayCaster::submit_async_any_hit(const Ray *rays, int count, uint32_t que
 	RT_ASSERT_NOT_NULL(rays);
 	dispatch_rays_no_sync(rays, count, pipeline_any_hit_, query_mask);
 	pending_count_ = count;
+	pending_rays_ = rays;
 	pending_async_ = true;
 }
 
@@ -304,6 +387,7 @@ void GPURayCaster::collect_nearest(Intersection *results, int count) {
 	if (!pending_async_ || !rd_) return;
 	RT_ASSERT(pending_async_, "collect_nearest called without pending async dispatch");
 	RT_ASSERT_NOT_NULL(results);
+	RT_ASSERT_NOT_NULL(pending_rays_);
 
 	rd_->sync();
 	pending_async_ = false;
@@ -319,17 +403,19 @@ void GPURayCaster::collect_nearest(Intersection *results, int count) {
 		const GPUIntersectionPacked &g = gpu_results[i];
 		Intersection &hit = results[i];
 		hit.t = g.t;
-		hit.position = Vector3(g.position[0], g.position[1], g.position[2]);
 		hit.normal = Vector3(g.normal[0], g.normal[1], g.normal[2]);
 		hit.u = g.bary_u;
 		hit.v = g.bary_v;
 		if (g.prim_id >= 0) {
 			hit.prim_id = static_cast<uint32_t>(g.prim_id);
 			hit.hit_layers = g.hit_layers;
+			hit.position = pending_rays_[i].origin + pending_rays_[i].direction * g.t;
 		} else {
 			hit.set_miss();
 		}
 	}
+
+	pending_rays_ = nullptr;
 }
 
 void GPURayCaster::collect_any_hit(bool *hit_results, int count) {
@@ -361,11 +447,12 @@ void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &
 	RT_ASSERT(count > 0, "dispatch_rays_no_sync: count must be positive");
 	RT_ASSERT_NOT_NULL(rays);
 	RT_ASSERT(rd_ != nullptr, "dispatch_rays_no_sync: rendering device is null");
-	// ---- Convert rays to GPU format ----
-	std::vector<GPURayPacked> gpu_rays(count);
+
+	// ---- Convert rays to GPU format (persistent buffer, no per-frame alloc) ----
+	gpu_rays_cache_.resize(static_cast<size_t>(count));
 	for (int i = 0; i < count; i++) {
 		const Ray &r = rays[i];
-		GPURayPacked &g = gpu_rays[i];
+		GPURayPacked &g = gpu_rays_cache_[static_cast<size_t>(i)];
 		g.origin[0] = r.origin.x; g.origin[1] = r.origin.y; g.origin[2] = r.origin.z;
 		g.t_max = r.t_max;
 		g.direction[0] = r.direction.x; g.direction[1] = r.direction.y; g.direction[2] = r.direction.z;
@@ -375,13 +462,12 @@ void GPURayCaster::dispatch_rays_no_sync(const Ray *rays, int count, const RID &
 	// ---- Ensure ray/result buffers are large enough ----
 	ensure_ray_buffers(static_cast<uint32_t>(count));
 
-	// ---- Upload ray data ----
+	// ---- Upload ray data (persistent staging buffer, no per-frame alloc) ----
 	{
-		PackedByteArray data;
 		uint32_t byte_size = static_cast<uint32_t>(count * sizeof(GPURayPacked));
-		data.resize(byte_size);
-		memcpy(data.ptrw(), gpu_rays.data(), byte_size);
-		rd_->buffer_update(ray_buffer_, 0, byte_size, data);
+		upload_cache_.resize(byte_size);
+		memcpy(upload_cache_.ptrw(), gpu_rays_cache_.data(), byte_size);
+		rd_->buffer_update(ray_buffer_, 0, byte_size, upload_cache_);
 	}
 
 	// ---- Rebuild uniform set if needed ----

@@ -12,8 +12,12 @@
 
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/material.hpp>
+#include <godot_cpp/classes/base_material3d.hpp>
+#include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -84,9 +88,12 @@ int RayTracerServer::register_mesh(Node *p_node) {
 	MeshInstance3D *mesh_inst = Object::cast_to<MeshInstance3D>(p_node);
 	ERR_FAIL_NULL_V_MSG(mesh_inst, -1, "RayTracerServer::register_mesh: node must be a MeshInstance3D");
 
-	// Extract object-space triangles (no transform applied).
+	// Extract object-space triangles and material data.
 	std::vector<Triangle> tris;
-	_extract_object_triangles(mesh_inst, tris);
+	std::vector<MaterialData> materials;
+	std::vector<uint32_t> material_ids;
+	std::vector<TriangleUV> uvs;
+	_extract_object_triangles(mesh_inst, tris, materials, material_ids, uvs);
 
 	if (tris.empty()) {
 		ERR_PRINT("[RayTracerServer] register_mesh: mesh has no triangles");
@@ -114,6 +121,9 @@ int RayTracerServer::register_mesh(Node *p_node) {
 	RegisteredMesh &entry = meshes_[mesh_id];
 	entry.node_id = static_cast<uint64_t>(mesh_inst->get_instance_id());
 	entry.object_tris = std::move(tris);
+	entry.object_materials = std::move(materials);
+	entry.object_material_ids = std::move(material_ids);
+	entry.object_triangle_uvs = std::move(uvs);
 	entry.layer_mask = mask;
 	entry.valid = true;
 
@@ -221,14 +231,14 @@ void RayTracerServer::submit(const RayQuery &query, RayQueryResult &result) {
 			ERR_FAIL_COND_MSG(result.hits == nullptr,
 				"RayTracerServer::submit(NEAREST): result.hits is null");
 			dispatcher_.cast_rays(query.rays, result.hits, query.count,
-				stats_ptr, query.layer_mask);
+				stats_ptr, query.layer_mask, query.coherent);
 			break;
 		}
 		case RayQuery::ANY_HIT: {
 			ERR_FAIL_COND_MSG(result.hit_flags == nullptr,
 				"RayTracerServer::submit(ANY_HIT): result.hit_flags is null");
 			dispatcher_.any_hit_rays(query.rays, result.hit_flags, query.count,
-				stats_ptr, query.layer_mask);
+				stats_ptr, query.layer_mask, query.coherent);
 			break;
 		}
 	}
@@ -315,7 +325,10 @@ int RayTracerServer::get_thread_count() const { return static_cast<int>(dispatch
 // ============================================================================
 
 void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
-		std::vector<Triangle> &out) {
+		std::vector<Triangle> &out_tris,
+		std::vector<MaterialData> &out_materials,
+		std::vector<uint32_t> &out_material_ids,
+		std::vector<TriangleUV> &out_uvs) {
 	RT_ASSERT_NOT_NULL(mesh_inst);
 
 	Ref<Mesh> mesh = mesh_inst->get_mesh();
@@ -336,7 +349,48 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 			indices = arrays[Mesh::ARRAY_INDEX];
 		}
 
-		uint32_t base_id = static_cast<uint32_t>(out.size());
+		// ---- Extract UVs for this surface ----
+		PackedVector2Array tex_uvs;
+		if (arrays.size() > Mesh::ARRAY_TEX_UV &&
+				arrays[Mesh::ARRAY_TEX_UV].get_type() == Variant::PACKED_VECTOR2_ARRAY) {
+			tex_uvs = arrays[Mesh::ARRAY_TEX_UV];
+		}
+		bool has_uvs = tex_uvs.size() > 0;
+
+		// ---- Extract material for this surface ----
+		MaterialData mat;
+		Ref<Material> godot_mat = mesh_inst->get_active_material(surf);
+		if (godot_mat.is_valid()) {
+			BaseMaterial3D *base = Object::cast_to<BaseMaterial3D>(godot_mat.ptr());
+			if (base) {
+				mat.albedo           = base->get_albedo();
+				mat.metallic         = base->get_metallic();
+				mat.roughness        = base->get_roughness();
+				mat.specular         = base->get_specular();
+				mat.emission         = base->get_emission();
+				mat.emission_energy  = base->get_emission_energy_multiplier();
+
+				// ---- Extract albedo texture (Phase 2) ----
+				Ref<Texture2D> albedo_tex = base->get_texture(BaseMaterial3D::TEXTURE_ALBEDO);
+				if (albedo_tex.is_valid()) {
+					Ref<Image> img = albedo_tex->get_image();
+					if (img.is_valid() && !img->is_empty()) {
+						// Decompress if needed so get_pixel() works.
+						if (img->is_compressed()) {
+							img->decompress();
+						}
+						mat.albedo_texture      = img;
+						mat.tex_width           = img->get_width();
+						mat.tex_height          = img->get_height();
+						mat.has_albedo_texture  = true;
+					}
+				}
+			}
+		}
+		uint32_t mat_idx = static_cast<uint32_t>(out_materials.size());
+		out_materials.push_back(mat);
+
+		uint32_t base_id = static_cast<uint32_t>(out_tris.size());
 
 		// Object-space: no transform applied. The TLAS instance transform
 		// will be applied during scene flattening in _rebuild_scene().
@@ -345,14 +399,32 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 				Vector3 a = vertices[indices[i]];
 				Vector3 b = vertices[indices[i + 1]];
 				Vector3 c = vertices[indices[i + 2]];
-				out.push_back(Triangle(a, b, c, base_id + (i / 3)));
+				out_tris.push_back(Triangle(a, b, c, base_id + (i / 3)));
+				out_material_ids.push_back(mat_idx);
+
+				TriangleUV tri_uv;
+				if (has_uvs) {
+					tri_uv.uv0 = tex_uvs[indices[i]];
+					tri_uv.uv1 = tex_uvs[indices[i + 1]];
+					tri_uv.uv2 = tex_uvs[indices[i + 2]];
+				}
+				out_uvs.push_back(tri_uv);
 			}
 		} else {
 			for (int i = 0; i + 2 < vertices.size(); i += 3) {
 				Vector3 a = vertices[i];
 				Vector3 b = vertices[i + 1];
 				Vector3 c = vertices[i + 2];
-				out.push_back(Triangle(a, b, c, base_id + (i / 3)));
+				out_tris.push_back(Triangle(a, b, c, base_id + (i / 3)));
+				out_material_ids.push_back(mat_idx);
+
+				TriangleUV tri_uv;
+				if (has_uvs) {
+					tri_uv.uv0 = tex_uvs[i];
+					tri_uv.uv1 = tex_uvs[i + 1];
+					tri_uv.uv2 = tex_uvs[i + 2];
+				}
+				out_uvs.push_back(tri_uv);
 			}
 		}
 	}
@@ -404,32 +476,81 @@ void RayTracerServer::_rebuild_scene() {
 	//    This preserves SIMD packet traversal on CPU and the existing GPU shader.
 	//    Triangles are stamped with their mesh's visibility layer mask.
 	dispatcher_.scene().clear();
+	scene_materials_.clear();
+	scene_material_ids_.clear();
+	scene_triangle_uvs_.clear();
 
 	const auto &instances = tlas_.instances();
 	uint32_t tri_offset = 0;
 
-	// Build a mapping from blas_id -> layer_mask.
+	// Build per-BLAS mappings (layer mask + material info).
 	// Each BLAS was added in the same order as the valid meshes above.
-	std::vector<uint32_t> blas_layer_masks;
+	struct BlasInfo {
+		uint32_t layer_mask;
+		uint32_t material_offset;
+		const std::vector<uint32_t> *material_ids;
+		const std::vector<TriangleUV> *triangle_uvs;
+	};
+	std::vector<BlasInfo> blas_info;
+	uint32_t mat_offset = 0;
 	for (size_t i = 0; i < meshes_.size(); i++) {
 		if (!meshes_[i].valid) continue;
-		blas_layer_masks.push_back(meshes_[i].layer_mask);
+		BlasInfo bi;
+		bi.layer_mask = meshes_[i].layer_mask;
+		bi.material_offset = mat_offset;
+		bi.material_ids = &meshes_[i].object_material_ids;
+		bi.triangle_uvs = &meshes_[i].object_triangle_uvs;
+		blas_info.push_back(bi);
+		for (const auto &m : meshes_[i].object_materials) {
+			scene_materials_.push_back(m);
+		}
+		mat_offset += static_cast<uint32_t>(meshes_[i].object_materials.size());
 	}
 
 	for (const auto &inst : instances) {
 		const MeshBLAS &blas = tlas_.mesh(inst.blas_id);
-		uint32_t inst_layer_mask = (inst.blas_id < blas_layer_masks.size())
-			? blas_layer_masks[inst.blas_id] : 0xFFFFFFFF;
+		uint32_t inst_layer_mask = (inst.blas_id < blas_info.size())
+			? blas_info[inst.blas_id].layer_mask : 0xFFFFFFFF;
+		const BlasInfo *bi = (inst.blas_id < blas_info.size())
+			? &blas_info[inst.blas_id] : nullptr;
 		for (const auto &tri : blas.triangles) {
 			Vector3 a = inst.transform.xform(tri.v0);
 			Vector3 b = inst.transform.xform(tri.v1);
 			Vector3 c = inst.transform.xform(tri.v2);
 			Triangle world_tri(a, b, c, tri_offset++, inst_layer_mask);
 			dispatcher_.scene().triangles.push_back(world_tri);
+
+			// Map this flattened triangle to its global material index.
+			uint32_t global_mat_id = 0;
+			if (bi && bi->material_ids && tri.id < bi->material_ids->size()) {
+				global_mat_id = (*bi->material_ids)[tri.id] + bi->material_offset;
+			}
+			scene_material_ids_.push_back(global_mat_id);
+
+			// Map this flattened triangle to its UVs.
+			TriangleUV uv;
+			if (bi && bi->triangle_uvs && tri.id < bi->triangle_uvs->size()) {
+				uv = (*bi->triangle_uvs)[tri.id];
+			}
+			scene_triangle_uvs_.push_back(uv);
 		}
 	}
 
 	// 3. Build flat BVH (and upload to GPU if the pipeline is ready).
 	dispatcher_.build();
 	scene_dirty_ = false;
+}
+
+// ============================================================================
+// Scene shade data accessor
+// ============================================================================
+
+SceneShadeData RayTracerServer::get_scene_shade_data() const {
+	SceneShadeData data;
+	data.materials      = scene_materials_.data();
+	data.material_count = static_cast<int>(scene_materials_.size());
+	data.material_ids   = scene_material_ids_.data();
+	data.triangle_count = static_cast<int>(scene_material_ids_.size());
+	data.triangle_uvs   = scene_triangle_uvs_.data();
+	return data;
 }

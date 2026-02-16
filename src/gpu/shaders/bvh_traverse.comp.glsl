@@ -3,11 +3,11 @@
 // ============================================================================
 // Workgroup configuration
 // ============================================================================
-// 64 threads per workgroup is the standard choice for compute shaders.
-// NVIDIA GPUs execute in "warps" of 32 threads — 64 = 2 warps, which keeps
-// the SM busy even when some threads are stalled on memory.
-// AMD GPUs use "wavefronts" of 64 threads, so 64 maps perfectly to 1 wave.
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+// 128 threads: 4 warps (NVIDIA) or 2 wavefronts (AMD).
+// More threads per workgroup = better latency hiding when threads stall on
+// memory. Turing SM has 1024 max resident threads, so 128-thread workgroups
+// allow 8 workgroups per SM (good occupancy).
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
 // ============================================================================
 // Data structures — MUST match gpu_structs.h (std430 layout)
@@ -20,9 +20,15 @@ struct GPUTriangle {
     vec3 normal; float _pad3;
 };
 
-struct GPUBVHNode {
-    vec3 bounds_min; uint left_first;
-    vec3 bounds_max; uint count;
+// Aila-Laine dual-AABB BVH node (64 bytes).
+// Both children's AABBs are stored in the parent, so traversal needs only
+// ONE memory fetch per node instead of TWO. This halves the memory latency
+// bottleneck during GPU traversal.
+struct GPUBVHNodeWide {
+    vec3 left_min;  uint left_idx;
+    vec3 left_max;  uint right_idx;
+    vec3 right_min; uint left_count;
+    vec3 right_max; uint right_count;
 };
 
 struct GPURay {
@@ -30,26 +36,23 @@ struct GPURay {
     vec3 direction; float t_min;
 };
 
+// Compact intersection — 32 bytes (position reconstructed on CPU from ray+t).
 struct GPUIntersection {
-    vec3 position; float t;
-    vec3 normal;   int prim_id;
+    float t;       int prim_id;
     float bary_u;  float bary_v;
-    uint hit_layers; float _pad;
+    vec3 normal;   uint hit_layers;
 };
 
 // ============================================================================
 // Buffers (Storage Shader Buffer Objects — SSBOs)
 // ============================================================================
-// set = 0: all buffers share a single descriptor set for simplicity.
-// restrict: tells the compiler these buffers don't alias (enables optimization).
-// readonly/writeonly: allows the driver to optimize memory access patterns.
 
 layout(set = 0, binding = 0, std430) restrict readonly buffer TriangleBuffer {
     GPUTriangle triangles[];
 };
 
 layout(set = 0, binding = 1, std430) restrict readonly buffer BVHNodeBuffer {
-    GPUBVHNode bvh_nodes[];
+    GPUBVHNodeWide bvh_nodes[];
 };
 
 layout(set = 0, binding = 2, std430) restrict readonly buffer RayBuffer {
@@ -61,7 +64,7 @@ layout(set = 0, binding = 3, std430) restrict writeonly buffer IntersectionBuffe
 };
 
 // ============================================================================
-// Push constants — fastest way to pass small uniform data (GPU registers)
+// Push constants & specialization constants
 // ============================================================================
 
 layout(push_constant, std430) uniform PushConstants {
@@ -69,21 +72,14 @@ layout(push_constant, std430) uniform PushConstants {
     uint query_mask;
 };
 
-// ============================================================================
-// Specialization constants — resolved at pipeline creation (zero cost at runtime)
-// ============================================================================
-// RAY_MODE 0 = nearest hit (default): find the closest intersection along the ray.
-// RAY_MODE 1 = any hit: exit on FIRST intersection (shadow/occlusion queries).
-// Using a specialization constant means the compiler eliminates the unused branch
-// entirely — no runtime if/else, no thread divergence. Two pipelines, one shader.
+// RAY_MODE 0 = nearest hit: find closest intersection.
+// RAY_MODE 1 = any hit: exit on first intersection (shadow queries).
+// Specialization constant → compiler eliminates dead branch entirely.
 layout(constant_id = 0) const uint RAY_MODE = 0u;
 
 // ============================================================================
-// AABB slab test (division-free)
+// AABB slab test (branchless, division-free with precomputed inv_dir)
 // ============================================================================
-// Same algorithm as CPU aabb.h.
-// Uses precomputed inv_dir to replace division with multiplication.
-// min/max intrinsics compile to single GPU instructions — branchless.
 
 bool ray_aabb(vec3 origin, vec3 inv_dir, float t_min, float t_max,
               vec3 box_min, vec3 box_max,
@@ -105,13 +101,10 @@ bool ray_aabb(vec3 origin, vec3 inv_dir, float t_min, float t_max,
 // ============================================================================
 // Moller-Trumbore triangle intersection
 // ============================================================================
-// Same algorithm as CPU tri.h.
-// Uses precomputed edge1/edge2/normal from the GPUTriangle struct.
-// Updates best_t in-place and outputs hit position + normal.
 
 bool ray_triangle(vec3 origin, vec3 direction, float t_min,
                   vec3 v0, vec3 edge1, vec3 edge2, vec3 tri_normal,
-                  inout float best_t, out vec3 hit_pos, out vec3 hit_normal,
+                  inout float best_t, out vec3 hit_normal,
                   out float out_u, out float out_v) {
     vec3 pvec = cross(direction, edge2);
     float det = dot(edge1, pvec);
@@ -131,7 +124,6 @@ bool ray_triangle(vec3 origin, vec3 direction, float t_min,
     if (t < t_min || t >= best_t) return false;
 
     best_t = t;
-    hit_pos = origin + direction * t;
     hit_normal = tri_normal;
     out_u = u;
     out_v = v;
@@ -139,12 +131,12 @@ bool ray_triangle(vec3 origin, vec3 direction, float t_min,
 }
 
 // ============================================================================
-// Safe inverse direction (matches CPU ray.h logic for near-zero components)
+// Safe inverse direction (handles near-zero components)
 // ============================================================================
 
 vec3 safe_inv_direction(vec3 dir) {
     const float EPS = 1e-9;
-    const float BIG = 1.0 / EPS; // 1e9
+    const float BIG = 1.0 / EPS;
     return vec3(
         abs(dir.x) > EPS ? 1.0 / dir.x : (dir.x >= 0.0 ? BIG : -BIG),
         abs(dir.y) > EPS ? 1.0 / dir.y : (dir.y >= 0.0 ? BIG : -BIG),
@@ -155,30 +147,57 @@ vec3 safe_inv_direction(vec3 dir) {
 // ============================================================================
 // Shared memory traversal stack
 // ============================================================================
-// Each thread gets its own stack segment in workgroup shared memory.
-// Why shared memory instead of local arrays?
-//   - GLSL local arrays compile to "local memory" which is actually device DRAM.
-//   - Shared memory is on-chip SRAM: 5-10x lower latency than device memory.
-//   - This frees registers for ray/intersection data, improving occupancy.
+// Each thread gets its own segment: [local_id * STACK_DEPTH .. (local_id+1) * STACK_DEPTH)
+// Memory: 128 threads × 24 entries × 4 bytes × 2 arrays = 24 KB
+// Turing SM has 64 KB shared memory → 24 KB allows 2 workgroups per SM.
 //
-// Memory budget: 64 threads x 24 entries x 4 bytes x 2 arrays = 12 KB
-// GTX 1650 Ti (Turing) has 64 KB shared memory — 12 KB allows 5 workgroups per SM.
-// Depth 24 supports BVH with up to 2^24 (~16M) nodes — far beyond any scene.
+// The tmin stack enables early exit: if best_t shrank since a node was pushed,
+// we skip it entirely without loading the node data (saves a 64-byte fetch).
 
 const uint STACK_DEPTH = 24u;
-shared uint  shared_stack_node[64 * STACK_DEPTH];
-shared float shared_stack_tmin[64 * STACK_DEPTH];
+shared uint  shared_stack_node[128 * STACK_DEPTH];
+shared float shared_stack_tmin[128 * STACK_DEPTH];
 
 // ============================================================================
-// Main — one thread per ray, iterative BVH traversal
+// Leaf triangle intersection helper (avoids code duplication)
+// ============================================================================
+
+#define INTERSECT_LEAF(first_tri, tri_count)                                      \
+    for (uint _li = 0u; _li < (tri_count); _li++) {                              \
+        uint tri_idx = (first_tri) + _li;                                         \
+        if ((triangles[tri_idx].layers & query_mask) == 0u) continue;             \
+        vec3 hn; float hu, hv;                                                    \
+        if (ray_triangle(origin, direction, t_min,                                \
+                         triangles[tri_idx].v0,                                   \
+                         triangles[tri_idx].edge1,                                \
+                         triangles[tri_idx].edge2,                                \
+                         triangles[tri_idx].normal,                               \
+                         best_t, hn, hu, hv)) {                                   \
+            best_normal = hn;                                                     \
+            best_u      = hu;                                                     \
+            best_v      = hv;                                                     \
+            best_prim   = int(triangles[tri_idx].id);                             \
+            best_layers = triangles[tri_idx].layers;                              \
+            if (RAY_MODE == 1u) {                                                 \
+                results[ray_idx].t          = best_t;                             \
+                results[ray_idx].prim_id    = best_prim;                          \
+                results[ray_idx].bary_u     = best_u;                             \
+                results[ray_idx].bary_v     = best_v;                             \
+                results[ray_idx].normal     = best_normal;                        \
+                results[ray_idx].hit_layers = best_layers;                        \
+                return;                                                           \
+            }                                                                     \
+        }                                                                         \
+    }
+
+// ============================================================================
+// Main — one thread per ray, Aila-Laine BVH traversal
 // ============================================================================
 
 void main() {
     uint ray_idx = gl_GlobalInvocationID.x;
     if (ray_idx >= ray_count) return;
 
-    // Per-thread shared memory stack offset.
-    // Thread i within the workgroup gets stack entries at [i*STACK_DEPTH .. (i+1)*STACK_DEPTH).
     uint stack_base = gl_LocalInvocationID.x * STACK_DEPTH;
 
     // ---- Load ray data ----
@@ -186,44 +205,22 @@ void main() {
     vec3 direction = rays[ray_idx].direction;
     float t_min    = rays[ray_idx].t_min;
     float t_max    = rays[ray_idx].t_max;
-
-    // Precompute inverse direction once per ray.
-    // On CPU we do this in the Ray constructor.
-    // On GPU we do it here — the parallel threads make it free.
-    vec3 inv_dir = safe_inv_direction(direction);
+    vec3 inv_dir   = safe_inv_direction(direction);
 
     // ---- Initialize result as "no hit" ----
     float best_t      = t_max;
-    vec3 best_pos      = vec3(0.0);
     vec3 best_normal   = vec3(0.0);
     int best_prim      = -1;
     float best_u       = 0.0;
     float best_v       = 0.0;
     uint best_layers   = 0u;
 
-    // ---- Test root AABB ----
-    float root_tmin, root_tmax;
-    if (!ray_aabb(origin, inv_dir, t_min, best_t,
-                  bvh_nodes[0].bounds_min, bvh_nodes[0].bounds_max,
-                  root_tmin, root_tmax)) {
-        // Ray misses the entire scene — early exit.
-        results[ray_idx].position = vec3(0.0);
-        results[ray_idx].t = t_max;
-        results[ray_idx].normal = vec3(0.0);
-        results[ray_idx].prim_id = -1;
-        results[ray_idx].bary_u = 0.0;
-        results[ray_idx].bary_v = 0.0;
-        results[ray_idx].hit_layers = 0u;
-        return;
-    }
-
-    // ---- Iterative traversal stack (shared memory) ----
-    // Stack lives in per-thread segment of workgroup shared memory.
-    // Access: shared_stack_node[stack_base + sp], shared_stack_tmin[stack_base + sp]
+    // ---- Start traversal at root (node 0) ----
+    // Root always has valid children data (leaf roots are wrapped as pseudo-internal
+    // by the CPU-side converter in gpu_ray_caster.cpp::upload_scene).
     int sp = 0;
-
     shared_stack_node[stack_base]     = 0u;
-    shared_stack_tmin[stack_base]     = root_tmin;
+    shared_stack_tmin[stack_base]     = -1e30;  // guaranteed < best_t
     sp = 1;
 
     while (sp > 0) {
@@ -231,99 +228,74 @@ void main() {
         uint node_idx    = shared_stack_node[stack_base + uint(sp)];
         float entry_tmin = shared_stack_tmin[stack_base + uint(sp)];
 
-        // EARLY EXIT: this subtree's nearest possible hit is farther
-        // than what we've already found. Skip without re-testing AABB.
+        // Early exit: this subtree's nearest possible hit is farther
+        // than current best. Skip without loading the node.
         if (entry_tmin > best_t) continue;
 
-        // Load node data.
-        uint node_left_first = bvh_nodes[node_idx].left_first;
-        uint node_count      = bvh_nodes[node_idx].count;
+        // ---- Load wide node: ONE fetch → both children's AABBs ----
+        // This is the Aila-Laine key insight: half the memory fetches
+        // compared to standard BVH that requires loading each child node
+        // separately to read its AABB.
+        vec3 l_min   = bvh_nodes[node_idx].left_min;
+        vec3 l_max   = bvh_nodes[node_idx].left_max;
+        uint l_idx   = bvh_nodes[node_idx].left_idx;
+        uint l_count = bvh_nodes[node_idx].left_count;
 
-        if (node_count > 0u) {
-            // ---- LEAF NODE: test all triangles ----
-            for (uint i = 0u; i < node_count; i++) {
-                uint tri_idx = node_left_first + i;
-                // Skip triangles not on any queried layer.
-                if ((triangles[tri_idx].layers & query_mask) == 0u) continue;
-                vec3 hp, hn;
-                float hu, hv;
-                if (ray_triangle(origin, direction, t_min,
-                                 triangles[tri_idx].v0,
-                                 triangles[tri_idx].edge1,
-                                 triangles[tri_idx].edge2,
-                                 triangles[tri_idx].normal,
-                                 best_t, hp, hn, hu, hv)) {
-                    best_pos    = hp;
-                    best_normal = hn;
-                    best_u      = hu;
-                    best_v      = hv;
-                    best_prim   = int(triangles[tri_idx].id);
-                    best_layers = triangles[tri_idx].layers;
+        vec3 r_min   = bvh_nodes[node_idx].right_min;
+        vec3 r_max   = bvh_nodes[node_idx].right_max;
+        uint r_idx   = bvh_nodes[node_idx].right_idx;
+        uint r_count = bvh_nodes[node_idx].right_count;
 
-                    // ANY_HIT: Return immediately on first intersection.
-                    // No need to find the closest — just report that something was hit.
-                    // The compiler eliminates this block entirely for nearest-hit pipelines.
-                    if (RAY_MODE == 1u) {
-                        results[ray_idx].t          = best_t;
-                        results[ray_idx].position   = best_pos;
-                        results[ray_idx].normal     = best_normal;
-                        results[ray_idx].prim_id    = best_prim;
-                        results[ray_idx].bary_u     = best_u;
-                        results[ray_idx].bary_v     = best_v;
-                        results[ray_idx].hit_layers = best_layers;
-                        return;
-                    }
-                }
-            }
-        } else {
-            // ---- INTERNAL NODE: test both children's AABBs ----
-            // DFS layout: left child is always at node_idx + 1 (implicit).
-            // left_first stores the right child index.
-            uint left  = node_idx + 1u;
-            uint right = node_left_first;
+        // ---- Test both children's AABBs ----
+        float tmin_l, tmax_l;
+        bool hit_l = ray_aabb(origin, inv_dir, t_min, best_t, l_min, l_max, tmin_l, tmax_l)
+                     && (tmin_l <= best_t);
 
-            float tmin_l, tmax_l, tmin_r, tmax_r;
-            bool hit_l = ray_aabb(origin, inv_dir, t_min, best_t,
-                                  bvh_nodes[left].bounds_min, bvh_nodes[left].bounds_max,
-                                  tmin_l, tmax_l);
-            bool hit_r = ray_aabb(origin, inv_dir, t_min, best_t,
-                                  bvh_nodes[right].bounds_min, bvh_nodes[right].bounds_max,
-                                  tmin_r, tmax_r);
+        float tmin_r, tmax_r;
+        bool hit_r = ray_aabb(origin, inv_dir, t_min, best_t, r_min, r_max, tmin_r, tmax_r)
+                     && (tmin_r <= best_t);
 
-            // Further filter: can this child beat the current closest hit?
-            hit_l = hit_l && (tmin_l <= best_t);
-            hit_r = hit_r && (tmin_r <= best_t);
+        // ---- Handle leaf children immediately (no stack push) ----
+        if (hit_l && l_count > 0u) {
+            INTERSECT_LEAF(l_idx, l_count)
+            hit_l = false;  // Handled — don't push.
+        }
+        if (hit_r && r_count > 0u) {
+            INTERSECT_LEAF(r_idx, r_count)
+            hit_r = false;  // Handled — don't push.
+        }
 
-            if (hit_l && hit_r) {
-                // Push FAR child first so NEAR child is popped first (LIFO).
-                // This finds nearby hits quickly, enabling more early exits.
-                if (tmin_l < tmin_r) {
-                    shared_stack_node[stack_base + uint(sp)] = right;
-                    shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
-                    shared_stack_node[stack_base + uint(sp)] = left;
-                    shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
-                } else {
-                    shared_stack_node[stack_base + uint(sp)] = left;
-                    shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
-                    shared_stack_node[stack_base + uint(sp)] = right;
-                    shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
-                }
-            } else if (hit_l) {
-                shared_stack_node[stack_base + uint(sp)] = left;
+        // ---- Push internal children (near first for better pruning) ----
+        bool push_l = hit_l && (l_count == 0u);
+        bool push_r = hit_r && (r_count == 0u);
+
+        if (push_l && push_r) {
+            // Push far child first (LIFO → near child processed first).
+            if (tmin_l < tmin_r) {
+                shared_stack_node[stack_base + uint(sp)] = r_idx;
+                shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
+                shared_stack_node[stack_base + uint(sp)] = l_idx;
                 shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
-            } else if (hit_r) {
-                shared_stack_node[stack_base + uint(sp)] = right;
+            } else {
+                shared_stack_node[stack_base + uint(sp)] = l_idx;
+                shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
+                shared_stack_node[stack_base + uint(sp)] = r_idx;
                 shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
             }
+        } else if (push_l) {
+            shared_stack_node[stack_base + uint(sp)] = l_idx;
+            shared_stack_tmin[stack_base + uint(sp)] = tmin_l; sp++;
+        } else if (push_r) {
+            shared_stack_node[stack_base + uint(sp)] = r_idx;
+            shared_stack_tmin[stack_base + uint(sp)] = tmin_r; sp++;
         }
     }
 
     // ---- Write result ----
     results[ray_idx].t          = best_t;
-    results[ray_idx].position   = best_pos;
-    results[ray_idx].normal     = best_normal;
     results[ray_idx].prim_id    = best_prim;
     results[ray_idx].bary_u     = best_u;
     results[ray_idx].bary_v     = best_v;
+    results[ray_idx].normal     = best_normal;
     results[ray_idx].hit_layers = best_layers;
 }

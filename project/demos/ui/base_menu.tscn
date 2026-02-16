@@ -1,0 +1,123 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://demos/ui/base_menu.gd" id="1_script"]
+[ext_resource type="Theme" path="res://demos/ui/menu_theme.tres" id="2_theme"]
+
+[node name="BaseMenu" type="CanvasLayer"]
+layer = 100
+script = ExtResource("1_script")
+
+[node name="Dim" type="ColorRect" parent="."]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+color = Color(0, 0, 0, 0.45)
+
+[node name="Scroll" type="ScrollContainer" parent="."]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+horizontal_scroll_mode = 0
+
+[node name="Center" type="CenterContainer" parent="Scroll"]
+custom_minimum_size = Vector2(1920, 1080)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+
+[node name="Panel" type="PanelContainer" parent="Scroll/Center"]
+custom_minimum_size = Vector2(440, 0)
+layout_mode = 2
+theme = ExtResource("2_theme")
+
+[node name="VBox" type="VBoxContainer" parent="Scroll/Center/Panel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 20
+text = "⚙  Raytracer Settings"
+horizontal_alignment = 1
+
+[node name="Sep0" type="HSeparator" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+
+[node name="BackendRow" type="HBoxContainer" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="Scroll/Center/Panel/VBox/BackendRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Backend"
+
+[node name="BackendBtn" type="OptionButton" parent="Scroll/Center/Panel/VBox/BackendRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 3
+popup/item_0/text = "CPU"
+popup/item_1/text = "GPU"
+popup/item_1/id = 1
+popup/item_2/text = "Auto"
+popup/item_2/id = 2
+
+[node name="GpuLabel" type="Label" parent="Scroll/Center/Panel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.6, 0.6, 0.6, 1)
+theme_override_font_sizes/font_size = 12
+text = "  GPU status..."
+
+[node name="Sep1" type="HSeparator" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+
+[node name="PanelSlot" type="VBoxContainer" parent="Scroll/Center/Panel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="SepStats" type="HSeparator" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+
+[node name="StatsLabel" type="Label" parent="Scroll/Center/Panel/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_colors/font_color = Color(0.75, 0.85, 0.75, 1)
+theme_override_font_sizes/font_size = 12
+text = "..."
+
+[node name="ButtonRow" type="HBoxContainer" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+alignment = 1
+theme_override_constants/separation = 12
+
+[node name="ActionBtn" type="Button" parent="Scroll/Center/Panel/VBox/ButtonRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "  Action  "
+
+[node name="ResumeBtn" type="Button" parent="Scroll/Center/Panel/VBox/ButtonRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "  Resume  "
+
+[node name="QuitBtn" type="Button" parent="Scroll/Center/Panel/VBox/ButtonRow"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "  Quit  "
+
+[node name="Hint" type="Label" parent="Scroll/Center/Panel/VBox"]
+layout_mode = 2
+theme_override_colors/font_color = Color(0.5, 0.5, 0.5, 1)
+theme_override_font_sizes/font_size = 11
+text = "ESC / P to toggle this menu"
+horizontal_alignment = 1

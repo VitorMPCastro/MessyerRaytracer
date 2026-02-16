@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<class name="RayRenderer" inherits="Node3D" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/godotengine/godot/master/doc/class.xsd">
+	<brief_description>
+		Produces ray-traced images from a Camera3D viewpoint.
+	</brief_description>
+	<description>
+		RayRenderer is the main class for the ray tracing graphics module. It takes a Camera3D, generates rays, traces them through the scene via [RayTracerServer], and produces multi-channel AOV (Arbitrary Output Variable) images.
+
+		A single trace produces all channels simultaneously: color, normals, depth, barycentrics, world position, primitive ID, and hit mask. Switch the displayed channel at zero cost via [member render_channel].
+
+		[b]Usage:[/b]
+		[codeblock]
+		var renderer = $RayRenderer
+		renderer.camera_path = $Camera3D.get_path()
+		renderer.resolution = Vector2i(640, 480)
+		renderer.render_channel = RayRenderer.CHANNEL_NORMAL
+		renderer.render_frame()
+		$TextureRect.texture = renderer.get_texture()
+		[/codeblock]
+
+		[b]Performance:[/b] Ray generation uses batch math (~30x faster than per-pixel Camera3D calls). Tracing routes through the optimal backend (CPU or GPU) automatically. At 320x240 with GPU: typically under 5ms per frame.
+	</description>
+	<tutorials>
+	</tutorials>
+	<members>
+		<member name="camera_path" type="NodePath" setter="set_camera_path" getter="get_camera_path" default="NodePath(&quot;&quot;)">
+			Path to the [Camera3D] node used for ray generation. The camera's transform, FOV, and projection type are read each frame.
+		</member>
+		<member name="resolution" type="Vector2i" setter="set_resolution" getter="get_resolution" default="Vector2i(320, 240)">
+			Output image resolution in pixels. Higher values trace more rays per frame. Start small (320x240) for interactive use.
+		</member>
+		<member name="render_channel" type="int" setter="set_render_channel" getter="get_render_channel" enum="RayRenderer.RenderChannel" default="0">
+			Which AOV channel to display. All channels are computed every frame; this only affects which one is converted to the output texture.
+		</member>
+		<member name="depth_range" type="float" setter="set_depth_range" getter="get_depth_range" default="100.0">
+			Maximum depth for the depth visualization channel. Hits beyond this distance appear black.
+		</member>
+		<member name="position_range" type="float" setter="set_position_range" getter="get_position_range" default="10.0">
+			Modulo range for the position visualization channel. World-space coordinates are wrapped to [code][0, range)[/code] per component.
+		</member>
+		<member name="sun_direction" type="Vector3" setter="set_sun_direction" getter="get_sun_direction" default="Vector3(0.371, 0.557, 0.743)">
+			Normalized direction toward the sun for flat/Lambert shading in the color channel.
+		</member>
+	</members>
+	<methods>
+		<method name="render_frame">
+			<return type="void" />
+			<description>
+				Perform a full render pass: generate rays, trace through the scene, shade all AOV channels, and update the output texture. Emits [signal frame_completed] when done.
+			</description>
+		</method>
+		<method name="get_texture" qualifiers="const">
+			<return type="ImageTexture" />
+			<description>
+				Returns the output [ImageTexture] containing the rendered image. Updated after each [method render_frame] call. Assign this to a [TextureRect] or [Sprite3D] for display.
+			</description>
+		</method>
+		<method name="get_image" qualifiers="const">
+			<return type="Image" />
+			<description>
+				Returns the raw [Image] (FORMAT_RGBA8) of the currently selected render channel. Useful for saving to disk or post-processing.
+			</description>
+		</method>
+		<method name="get_render_ms" qualifiers="const">
+			<return type="float" />
+			<description>
+				Total wall-clock time of the last [method render_frame] call in milliseconds.
+			</description>
+		</method>
+		<method name="get_raygen_ms" qualifiers="const">
+			<return type="float" />
+			<description>
+				Time spent generating rays in the last frame (milliseconds).
+			</description>
+		</method>
+		<method name="get_trace_ms" qualifiers="const">
+			<return type="float" />
+			<description>
+				Time spent tracing rays through the BVH/GPU in the last frame (milliseconds).
+			</description>
+		</method>
+		<method name="get_shade_ms" qualifiers="const">
+			<return type="float" />
+			<description>
+				Time spent shading intersections into AOV channels in the last frame (milliseconds).
+			</description>
+		</method>
+		<method name="get_convert_ms" qualifiers="const">
+			<return type="float" />
+			<description>
+				Time spent converting the float framebuffer to the output Image/ImageTexture (milliseconds).
+			</description>
+		</method>
+	</methods>
+	<signals>
+		<signal name="frame_completed">
+			<description>
+				Emitted when [method render_frame] finishes. Connect to this to update UI or trigger the next frame.
+			</description>
+		</signal>
+	</signals>
+	<constants>
+		<constant name="CHANNEL_COLOR" value="0" enum="RenderChannel">
+			Flat Lambert shading with a fixed sun direction.
+		</constant>
+		<constant name="CHANNEL_NORMAL" value="1" enum="RenderChannel">
+			World-space surface normals mapped to RGB.
+		</constant>
+		<constant name="CHANNEL_DEPTH" value="2" enum="RenderChannel">
+			Linear depth from the camera, normalized to [member depth_range].
+		</constant>
+		<constant name="CHANNEL_BARYCENTRIC" value="3" enum="RenderChannel">
+			Barycentric coordinates (u, v, 1-u-v) as RGB. Useful for debugging UV interpolation.
+		</constant>
+		<constant name="CHANNEL_POSITION" value="4" enum="RenderChannel">
+			World-space hit position, wrapped to [member position_range].
+		</constant>
+		<constant name="CHANNEL_PRIM_ID" value="5" enum="RenderChannel">
+			Unique color per triangle (hashed primitive ID).
+		</constant>
+		<constant name="CHANNEL_HIT_MASK" value="6" enum="RenderChannel">
+			White where rays hit geometry, black for misses.
+		</constant>
+	</constants>
+</class>

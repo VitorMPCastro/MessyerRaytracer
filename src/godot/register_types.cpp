@@ -10,6 +10,10 @@
 #include "raytracer_probe.h"
 #include "raytracer_debug.h"
 #include "ray_batch.h"
+#include "modules/graphics/ray_renderer.h"
+#include "modules/graphics/ray_scene_setup.h"
+#include "modules/graphics/rt_compositor_base.h"
+#include "modules/graphics/rt_reflection_effect.h"
 
 using namespace godot;
 
@@ -22,6 +26,10 @@ void initialize_gdextension_types(ModuleInitializationLevel p_level)
 	GDREGISTER_CLASS(RayTracerProbe);
 	GDREGISTER_CLASS(RayTracerDebug);
 	GDREGISTER_CLASS(RayBatch);
+	GDREGISTER_CLASS(RayRenderer);
+	GDREGISTER_CLASS(RaySceneSetup);
+	GDREGISTER_ABSTRACT_CLASS(RTCompositorBase);
+	GDREGISTER_CLASS(RTReflectionEffect);
 
 	Engine::get_singleton()->register_singleton("RayTracerServer", memnew(RayTracerServer));
 }

@@ -29,8 +29,11 @@ extends Node3D
 @onready var probe: RayTracerProbe = $RayTracerProbe
 @onready var debug: RayTracerDebug = $RayTracerDebug
 
-var cam: Camera3D
-var menu: PauseMenu
+@onready var cam: Camera3D = $Camera3D
+var menu: BaseMenu
+var debug_panel: DebugPanel
+var layer_panel: LayerPanel
+var tooltip: TooltipOverlay
 
 # Camera movement
 var move_speed := 5.0
@@ -44,15 +47,7 @@ var mode_names := ["Rays", "Normals", "Distance", "Heatmap", "Overheat", "BVH", 
 
 
 func _ready() -> void:
-	# ---- Camera (use scene camera or create one) ----
-	cam = get_node_or_null("Camera3D") as Camera3D
-	if cam == null:
-		cam = Camera3D.new()
-		cam.name = "Camera3D"
-		add_child(cam)
-	cam.position = Vector3(0, 6, 8)
-	cam.fov = 60.0
-	cam.make_current()
+	# ---- Orient camera toward origin ----
 	cam.look_at(Vector3(0, 0, 0))
 	pitch = cam.rotation.x
 	yaw = cam.rotation.y
@@ -67,15 +62,27 @@ func _ready() -> void:
 	debug.debug_enabled = true
 	debug.debug_draw_mode = RayTracerDebug.DRAW_LAYERS
 
-	# ---- Pause menu (layer-demo mode) ----
-	menu = PauseMenu.new()
-	menu.debug_node = debug
-	menu.probe_node = probe
-	menu.layer_demo_mode = true
-	menu.grid_w = 48
-	menu.grid_h = 36
+	# ---- Pause menu (modular: debug + layers) ----
+	menu = preload("res://demos/ui/base_menu.tscn").instantiate()
+
+	debug_panel = preload("res://demos/ui/debug_panel.tscn").instantiate()
+	debug_panel.debug_node = debug
+	debug_panel.grid_w = 48
+	debug_panel.grid_h = 36
+	menu.add_panel(debug_panel)
+
+	layer_panel = preload("res://demos/ui/layer_panel.tscn").instantiate()
+	layer_panel.debug_node = debug
+	layer_panel.probe_node = probe
+	menu.add_panel(layer_panel)
+
 	menu.cast_callback = _cast_rays_from_camera
+	menu.set_action_label("Cast Rays")
 	add_child(menu)
+
+	tooltip = preload("res://demos/ui/tooltip_overlay.tscn").instantiate()
+	tooltip.hint_text = "[Layer Demo]\nWASD / Arrows — Move camera\nMouse — Look around\nQ / E — Down / Up\n\n1 / 2 / 3 — Toggle Layer 1/2/3\nSPACE — Cast debug rays\nTAB — Cycle draw mode\nB — Cycle backend\nC — Clear debug lines\n\nESC / P — Settings menu\nF1 — Toggle this help"
+	add_child(tooltip)
 
 	# ---- Mouse capture ----
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -123,6 +130,8 @@ func _input(event: InputEvent) -> void:
 			_toggle_layer(2)
 		KEY_TAB:
 			_cycle_draw_mode()
+		KEY_B:
+			_cycle_backend()
 		KEY_SPACE:
 			_cast_rays_from_camera()
 		KEY_C:
@@ -161,40 +170,35 @@ func _process(delta: float) -> void:
 func _cast_rays_from_camera() -> void:
 	var cam_pos := cam.global_position
 	var cam_fwd := -cam.global_basis.z
-	debug.cast_debug_rays(cam_pos, cam_fwd, menu.grid_w, menu.grid_h, cam.fov)
+	debug.cast_debug_rays(cam_pos, cam_fwd, debug_panel.grid_w, debug_panel.grid_h, cam.fov)
 
 
 func _cycle_draw_mode() -> void:
 	var next := (debug.debug_draw_mode + 1) % mode_names.size()
 	debug.debug_draw_mode = next
+	debug_panel.sync_from_node()
 	print("Draw mode: ", mode_names[next])
 	_cast_rays_from_camera()
 
 
-## Toggle a layer via quick-key (0-indexed) and synchronise with the menu.
-func _toggle_layer(idx: int) -> void:
-	menu.layer_enabled[idx] = not menu.layer_enabled[idx]
-	# Sync checkbox in menu if it gets opened later.
-	if idx < menu._layer_checks.size():
-		menu._layer_checks[idx].set_pressed_no_signal(menu.layer_enabled[idx])
-	_apply_layer_mask()
-
-
-func _apply_layer_mask() -> void:
-	var mask := 0
-	for i in range(3):
-		if menu.layer_enabled[i]:
-			mask |= (1 << i)
-	probe.layer_mask = mask
-	debug.debug_layer_mask = mask
-	print("Layer mask: ", _mask_string())
+func _cycle_backend() -> void:
+	var next := (RayTracerServer.get_backend() + 1) % 3
+	RayTracerServer.set_backend(next)
+	RayTracerServer.build()
+	print("Backend → ", ["CPU", "GPU", "Auto"][next])
 	_cast_rays_from_camera()
+
+
+## Toggle a layer via quick-key (0-indexed) and synchronise with the panel.
+func _toggle_layer(idx: int) -> void:
+	layer_panel.toggle_layer(idx)
+	print("Layer mask: ", _mask_string())
 
 
 func _mask_string() -> String:
 	var parts: Array[String] = []
 	for i in range(3):
-		if menu.layer_enabled[i]:
+		if layer_panel.layer_enabled[i]:
 			parts.append("Layer%d:ON" % (i + 1))
 		else:
 			parts.append("Layer%d:off" % (i + 1))

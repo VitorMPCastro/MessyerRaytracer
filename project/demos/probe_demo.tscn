@@ -29,6 +29,11 @@ script = ExtResource("1_probe")
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=221909951]
 transform = Transform3D(0.707107, 0.298836, -0.640856, 0, 0.906308, 0.422618, 0.707107, -0.298836, 0.640856, 0, 0, 0)
 
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, -5)
+fov = 75.0
+current = true
+
 [node name="RayTracerDebug" type="RayTracerDebug" parent="." unique_id=961429031]
 debug_draw_mode = 5
 debug_bvh_depth = 5

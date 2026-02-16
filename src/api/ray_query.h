@@ -69,6 +69,12 @@ struct RayQuery {
 	// ---- Options ----
 	bool collect_stats = false;  ///< Populate result.stats (CPU path only; small cost).
 
+	/// Hint: rays are spatially coherent (e.g. primary camera rays).
+	/// When true, the GPU dispatcher skips Morton-code sorting because
+	/// adjacent rays already map to nearby directions. This eliminates
+	/// the O(N log N) sort and 3 full-array copies that cost ~20-30ms at 1080p.
+	bool coherent = false;
+
 	/// Convenience: construct a nearest-hit query.
 	static RayQuery nearest(const Ray *rays, int count,
 			uint32_t layer_mask = 0xFFFFFFFF) {

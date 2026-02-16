@@ -1,18 +1,27 @@
 class_name PauseMenu
 extends CanvasLayer
-## Reusable raytracer settings/pause menu.
+## @deprecated — Use the modular UI system in demos/ui/ instead.
 ##
-## Shows a styled panel with all raytracer debug controls when the user
-## presses ESC or P.  Closing the menu re-captures the mouse.
+## This monolithic menu has been replaced by:
+##   - BaseMenu      (demos/ui/base_menu.tscn)  — shared chrome
+##   - DebugPanel    (demos/ui/debug_panel.tscn) — debug controls
+##   - RendererPanel (demos/ui/renderer_panel.tscn) — renderer controls
+##   - LayerPanel    (demos/ui/layer_panel.tscn) — layer toggles
+##   - TooltipOverlay(demos/ui/tooltip_overlay.tscn) — F1 hints
 ##
-## USAGE -- instantiate from any demo script:
+## Kept for reference only.  All demos now use the modular panels.
+##
+## OLD USAGE:
 ##   var menu := PauseMenu.new()
-##   menu.debug_node = $RayTracerDebug          # required
-##   menu.cast_callback = _cast_rays_from_camera # called when settings change
+##   menu.debug_node = $RayTracerDebug
+##   menu.cast_callback = _cast_rays_from_camera
 ##   add_child(menu)
 
 ## The RayTracerDebug node to control.
 var debug_node: RayTracerDebug
+
+## The RayRenderer node to control (set by renderer_demo).
+var renderer_node  # RayRenderer (GDExtension type resolved at runtime)
 
 ## Extra per-demo options toggle (layer_demo sets this).
 var layer_demo_mode := false
@@ -50,9 +59,24 @@ var _layer_checks: Array[CheckBox] = []
 var _stats_label: Label
 var _gpu_label: Label
 
+# Renderer controls
+var _channel_btn: OptionButton
+var _res_btn: OptionButton
+var _depth_spin: SpinBox
+var _pos_spin: SpinBox
+var _sun_x_spin: SpinBox
+var _sun_y_spin: SpinBox
+var _sun_z_spin: SpinBox
+var _auto_render_check: CheckBox
+
 # backend / draw mode name arrays
 var _backend_names := ["CPU", "GPU", "Auto"]
 var _mode_names := ["Rays", "Normals", "Distance", "Heatmap", "Overheat", "BVH", "Layers"]
+var _channel_names: Array[String] = ["Color", "Normal", "Depth", "Barycentric", "Position", "PrimID", "HitMask"]
+var _res_presets: Array[Vector2i] = [
+	Vector2i(160, 120), Vector2i(320, 240), Vector2i(640, 480),
+	Vector2i(960, 720), Vector2i(1280, 960),
+]
 
 
 func _ready() -> void:
@@ -162,73 +186,155 @@ func _build_ui() -> void:
 	_refresh_gpu_label()
 	vbox.add_child(_gpu_label)
 
+	# ══════════════════════════════════════════════════════════════════════
+	# ── Renderer Section (only when renderer_node is set) ──
+	# ══════════════════════════════════════════════════════════════════════
+	if renderer_node:
+		_add_separator(vbox)
+		var render_title := Label.new()
+		render_title.text = "🎨  Renderer"
+		render_title.add_theme_font_size_override("font_size", 16)
+		vbox.add_child(render_title)
+
+		# Channel selector
+		var ch_row := _make_row("Channel")
+		vbox.add_child(ch_row)
+		_channel_btn = OptionButton.new()
+		for cn in _channel_names:
+			_channel_btn.add_item(cn)
+		_channel_btn.selected = renderer_node.render_channel
+		_channel_btn.item_selected.connect(_on_channel_changed)
+		ch_row.add_child(_channel_btn)
+
+		# Resolution selector
+		var res_row := _make_row("Resolution")
+		vbox.add_child(res_row)
+		_res_btn = OptionButton.new()
+		for i in range(_res_presets.size()):
+			var r: Vector2i = _res_presets[i]
+			_res_btn.add_item("%dx%d" % [r.x, r.y])
+		# Find current index
+		var cur_res: Vector2i = renderer_node.resolution
+		for i in range(_res_presets.size()):
+			if _res_presets[i] == cur_res:
+				_res_btn.selected = i
+				break
+		_res_btn.item_selected.connect(_on_resolution_changed)
+		res_row.add_child(_res_btn)
+
+		# Depth range
+		var depth_row := _make_row("Depth Range")
+		vbox.add_child(depth_row)
+		_depth_spin = _make_spin(1.0, 10000.0, renderer_node.depth_range, 5.0)
+		_depth_spin.value_changed.connect(func(v: float):
+			renderer_node.depth_range = v; _fire_cast())
+		depth_row.add_child(_depth_spin)
+
+		# Position range
+		var pos_row := _make_row("Pos. Range")
+		vbox.add_child(pos_row)
+		_pos_spin = _make_spin(0.1, 10000.0, renderer_node.position_range, 1.0)
+		_pos_spin.value_changed.connect(func(v: float):
+			renderer_node.position_range = v; _fire_cast())
+		pos_row.add_child(_pos_spin)
+
+		# Sun direction XYZ
+		var sun_label := Label.new()
+		sun_label.text = "Sun Direction"
+		sun_label.add_theme_font_size_override("font_size", 13)
+		vbox.add_child(sun_label)
+		var sun_row := HBoxContainer.new()
+		sun_row.add_theme_constant_override("separation", 4)
+		vbox.add_child(sun_row)
+		var sun_dir: Vector3 = renderer_node.sun_direction
+		_sun_x_spin = _make_spin(-1.0, 1.0, sun_dir.x, 0.05)
+		_sun_y_spin = _make_spin(-1.0, 1.0, sun_dir.y, 0.05)
+		_sun_z_spin = _make_spin(-1.0, 1.0, sun_dir.z, 0.05)
+		for s: SpinBox in [_sun_x_spin, _sun_y_spin, _sun_z_spin]:
+			s.value_changed.connect(func(_v: float): _on_sun_changed())
+			sun_row.add_child(s)
+
+		# Auto-render toggle
+		_auto_render_check = CheckBox.new()
+		_auto_render_check.text = "Auto-render every frame"
+		_auto_render_check.button_pressed = true
+		_auto_render_check.toggled.connect(_on_auto_render_toggled)
+		vbox.add_child(_auto_render_check)
+
 	_add_separator(vbox)
 
-	# ── Draw Mode ──
-	var mode_row := _make_row("Draw Mode")
-	vbox.add_child(mode_row)
-	_mode_btn = OptionButton.new()
-	for mn in _mode_names:
-		_mode_btn.add_item(mn)
+	# ══════════════════════════════════════════════════════════════════════
+	# ── Debug Section (only when debug_node is set) ──
+	# ══════════════════════════════════════════════════════════════════════
 	if debug_node:
+		var debug_title := Label.new()
+		debug_title.text = "🔍  Debug Visualizer"
+		debug_title.add_theme_font_size_override("font_size", 16)
+		vbox.add_child(debug_title)
+
+		var mode_row := _make_row("Draw Mode")
+		vbox.add_child(mode_row)
+		_mode_btn = OptionButton.new()
+		for mn in _mode_names:
+			_mode_btn.add_item(mn)
 		_mode_btn.selected = debug_node.debug_draw_mode
-	_mode_btn.item_selected.connect(_on_mode_changed)
-	mode_row.add_child(_mode_btn)
+		_mode_btn.item_selected.connect(_on_mode_changed)
+		mode_row.add_child(_mode_btn)
 
-	# ── Grid Resolution ──
-	var grid_row := _make_row("Grid W×H")
-	vbox.add_child(grid_row)
-	_grid_w_spin = _make_spin(4, 128, grid_w, 4)
-	_grid_w_spin.value_changed.connect(func(v: float): grid_w = int(v); _fire_cast())
-	grid_row.add_child(_grid_w_spin)
-	var x_label := Label.new()
-	x_label.text = "×"
-	grid_row.add_child(x_label)
-	_grid_h_spin = _make_spin(4, 96, grid_h, 4)
-	_grid_h_spin.value_changed.connect(func(v: float): grid_h = int(v); _fire_cast())
-	grid_row.add_child(_grid_h_spin)
+		# ── Grid Resolution ──
+		var grid_row := _make_row("Grid W×H")
+		vbox.add_child(grid_row)
+		_grid_w_spin = _make_spin(4, 128, grid_w, 4)
+		_grid_w_spin.value_changed.connect(func(v: float): grid_w = int(v); _fire_cast())
+		grid_row.add_child(_grid_w_spin)
+		var x_label := Label.new()
+		x_label.text = "×"
+		grid_row.add_child(x_label)
+		_grid_h_spin = _make_spin(4, 96, grid_h, 4)
+		_grid_h_spin.value_changed.connect(func(v: float): grid_h = int(v); _fire_cast())
+		grid_row.add_child(_grid_h_spin)
 
-	_add_separator(vbox)
+		_add_separator(vbox)
 
-	# ── Ray Settings ──
-	var miss_row := _make_row("Miss Length")
-	vbox.add_child(miss_row)
-	_miss_len_spin = _make_spin(0.5, 200, debug_node.debug_ray_miss_length if debug_node else 20.0, 0.5)
-	_miss_len_spin.value_changed.connect(func(v: float):
-		if debug_node: debug_node.debug_ray_miss_length = v)
-	miss_row.add_child(_miss_len_spin)
+		# ── Ray Settings ──
+		var miss_row := _make_row("Miss Length")
+		vbox.add_child(miss_row)
+		_miss_len_spin = _make_spin(0.5, 200, debug_node.debug_ray_miss_length, 0.5)
+		_miss_len_spin.value_changed.connect(func(v: float):
+			if debug_node: debug_node.debug_ray_miss_length = v)
+		miss_row.add_child(_miss_len_spin)
 
-	var norm_row := _make_row("Normal Length")
-	vbox.add_child(norm_row)
-	_normal_len_spin = _make_spin(0.01, 5.0, debug_node.debug_normal_length if debug_node else 0.3, 0.05)
-	_normal_len_spin.value_changed.connect(func(v: float):
-		if debug_node: debug_node.debug_normal_length = v)
-	norm_row.add_child(_normal_len_spin)
+		var norm_row := _make_row("Normal Length")
+		vbox.add_child(norm_row)
+		_normal_len_spin = _make_spin(0.01, 5.0, debug_node.debug_normal_length, 0.05)
+		_normal_len_spin.value_changed.connect(func(v: float):
+			if debug_node: debug_node.debug_normal_length = v)
+		norm_row.add_child(_normal_len_spin)
 
-	_add_separator(vbox)
+		_add_separator(vbox)
 
-	# ── Heatmap Settings ──
-	var hdist_row := _make_row("Heatmap Dist")
-	vbox.add_child(hdist_row)
-	_heat_dist_spin = _make_spin(1, 500, debug_node.debug_heatmap_max_distance if debug_node else 50.0, 5)
-	_heat_dist_spin.value_changed.connect(func(v: float):
-		if debug_node: debug_node.debug_heatmap_max_distance = v)
-	hdist_row.add_child(_heat_dist_spin)
+		# ── Heatmap Settings ──
+		var hdist_row := _make_row("Heatmap Dist")
+		vbox.add_child(hdist_row)
+		_heat_dist_spin = _make_spin(1, 500, debug_node.debug_heatmap_max_distance, 5)
+		_heat_dist_spin.value_changed.connect(func(v: float):
+			if debug_node: debug_node.debug_heatmap_max_distance = v)
+		hdist_row.add_child(_heat_dist_spin)
 
-	var hcost_row := _make_row("Heatmap Cost")
-	vbox.add_child(hcost_row)
-	_heat_cost_spin = _make_spin(1, 500, debug_node.debug_heatmap_max_cost if debug_node else 50, 5)
-	_heat_cost_spin.value_changed.connect(func(v: float):
-		if debug_node: debug_node.debug_heatmap_max_cost = int(v))
-	hcost_row.add_child(_heat_cost_spin)
+		var hcost_row := _make_row("Heatmap Cost")
+		vbox.add_child(hcost_row)
+		_heat_cost_spin = _make_spin(1, 500, debug_node.debug_heatmap_max_cost, 5)
+		_heat_cost_spin.value_changed.connect(func(v: float):
+			if debug_node: debug_node.debug_heatmap_max_cost = int(v))
+		hcost_row.add_child(_heat_cost_spin)
 
-	# ── BVH Depth ──
-	var bvh_row := _make_row("BVH Depth")
-	vbox.add_child(bvh_row)
-	_bvh_depth_spin = _make_spin(-1, 32, debug_node.debug_bvh_depth if debug_node else 0, 1)
-	_bvh_depth_spin.value_changed.connect(func(v: float):
-		if debug_node: debug_node.debug_bvh_depth = int(v))
-	bvh_row.add_child(_bvh_depth_spin)
+		# ── BVH Depth ──
+		var bvh_row := _make_row("BVH Depth")
+		vbox.add_child(bvh_row)
+		_bvh_depth_spin = _make_spin(-1, 32, debug_node.debug_bvh_depth, 1)
+		_bvh_depth_spin.value_changed.connect(func(v: float):
+			if debug_node: debug_node.debug_bvh_depth = int(v))
+		bvh_row.add_child(_bvh_depth_spin)
 
 	# ── Visibility Layers (layer_demo only) ──
 	if layer_demo_mode:
@@ -265,16 +371,23 @@ func _build_ui() -> void:
 	btn_row.add_theme_constant_override("separation", 12)
 	vbox.add_child(btn_row)
 
-	var cast_btn := Button.new()
-	cast_btn.text = "  Cast Rays  "
-	cast_btn.pressed.connect(func(): _fire_cast())
-	btn_row.add_child(cast_btn)
+	if debug_node:
+		var cast_btn := Button.new()
+		cast_btn.text = "  Cast Rays  "
+		cast_btn.pressed.connect(func(): _fire_cast())
+		btn_row.add_child(cast_btn)
 
-	var clear_btn := Button.new()
-	clear_btn.text = "  Clear  "
-	clear_btn.pressed.connect(func():
-		if debug_node: debug_node.clear_debug())
-	btn_row.add_child(clear_btn)
+		var clear_btn := Button.new()
+		clear_btn.text = "  Clear  "
+		clear_btn.pressed.connect(func():
+			if debug_node: debug_node.clear_debug())
+		btn_row.add_child(clear_btn)
+
+	if renderer_node:
+		var render_btn := Button.new()
+		render_btn.text = "  Render Frame  "
+		render_btn.pressed.connect(func(): _fire_cast())
+		btn_row.add_child(render_btn)
 
 	var close_btn := Button.new()
 	close_btn.text = "  Resume  "
@@ -341,6 +454,35 @@ func _on_mode_changed(idx: int) -> void:
 	_fire_cast()
 
 
+func _on_channel_changed(idx: int) -> void:
+	if renderer_node:
+		renderer_node.render_channel = idx
+	_fire_cast()
+
+
+func _on_resolution_changed(idx: int) -> void:
+	if renderer_node and idx >= 0 and idx < _res_presets.size():
+		renderer_node.resolution = _res_presets[idx]
+	_fire_cast()
+
+
+func _on_sun_changed() -> void:
+	if renderer_node and _sun_x_spin and _sun_y_spin and _sun_z_spin:
+		var d := Vector3(_sun_x_spin.value, _sun_y_spin.value, _sun_z_spin.value)
+		if d.length_squared() > 0.001:
+			renderer_node.sun_direction = d.normalized()
+	_fire_cast()
+
+
+func _on_auto_render_toggled(on: bool) -> void:
+	# The demo script reads this via menu.auto_render_enabled
+	auto_render_enabled = on
+
+
+## Public flag — demo scripts read this to gate continuous rendering.
+var auto_render_enabled := true
+
+
 func _on_layer_toggled(layer_idx: int, on: bool) -> void:
 	layer_enabled[layer_idx] = on
 	var mask := 0
@@ -368,7 +510,11 @@ func _refresh_stats() -> void:
 	var depth := RayTracerServer.get_bvh_depth()
 	var threads := RayTracerServer.get_thread_count()
 	var gpu_str := "Yes" if RayTracerServer.is_gpu_available() else "No"
-	var ms := debug_node.get_last_cast_ms() if debug_node else 0.0
+	var ms := 0.0
+	if debug_node:
+		ms = debug_node.get_last_cast_ms()
+	elif renderer_node:
+		ms = renderer_node.get_render_ms()
 	_stats_label.text = "%d tris | %d meshes | BVH depth %d | %d threads | GPU: %s | Last: %.2f ms" % [
 		tri, meshes, depth, threads, gpu_str, ms]
 

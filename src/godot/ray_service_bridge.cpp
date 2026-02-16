@@ -94,6 +94,10 @@ public:
 	int get_thread_count() const override {
 		return s()->get_thread_count();
 	}
+
+	SceneShadeData get_shade_data() const override {
+		return s()->get_scene_shade_data();
+	}
 };
 
 static RayServiceBridge g_bridge;

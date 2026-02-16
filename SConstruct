@@ -60,14 +60,41 @@ def embed_shader_action(target, source, env):
         f.write(')";\n')
     return 0
 
-shader_header = env.Command(
+shader_bvh = env.Command(
     "src/gpu/shaders/bvh_traverse.gen.h",
     "src/gpu/shaders/bvh_traverse.comp.glsl",
     embed_shader_action,
 )
 
+shader_rt_reflections = env.Command(
+    "src/gpu/shaders/rt_reflections.gen.h",
+    "src/gpu/shaders/rt_reflections.comp.glsl",
+    embed_shader_action,
+)
+
+shader_rt_denoise_spatial = env.Command(
+    "src/gpu/shaders/rt_denoise_spatial.gen.h",
+    "src/gpu/shaders/rt_denoise_spatial.comp.glsl",
+    embed_shader_action,
+)
+
+shader_rt_denoise_temporal = env.Command(
+    "src/gpu/shaders/rt_denoise_temporal.gen.h",
+    "src/gpu/shaders/rt_denoise_temporal.comp.glsl",
+    embed_shader_action,
+)
+
+shader_rt_composite = env.Command(
+    "src/gpu/shaders/rt_composite.gen.h",
+    "src/gpu/shaders/rt_composite.comp.glsl",
+    embed_shader_action,
+)
+
+shader_headers = [shader_bvh, shader_rt_reflections, shader_rt_denoise_spatial,
+                  shader_rt_denoise_temporal, shader_rt_composite]
+
 sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp") + Glob("src/modules/*/*.cpp")
-env.Depends(sources, shader_header)
+env.Depends(sources, shader_headers)
 
 if env["target"] in ["editor", "template_debug"]:
     try:

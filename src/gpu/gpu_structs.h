@@ -53,27 +53,44 @@ struct GPUTrianglePacked {
 static_assert(sizeof(GPUTrianglePacked) == 64, "GPUTrianglePacked must be 64 bytes (std430)");
 
 // ============================================================================
-// GPU BVH Node — 32 bytes
+// GPU BVH Node — 32 bytes (legacy, kept for reference)
 // ============================================================================
-//
-// GLSL layout:
-//   struct GPUBVHNode {
-//       vec3 bounds_min; uint left_first;  // offset  0–15
-//       vec3 bounds_max; uint count;        // offset 16–31
-//   };
-//
-// Encoding (same as CPU BVH):
-//   count == 0: INTERNAL node. Left child = this_node + 1 (implicit DFS).
-//               left_first = right child index.
-//   count >  0: LEAF node. left_first = first triangle index. count = triangle count.
-//
-// NOTE: Godot stores AABB as (position, size). We convert to (min, max) for
-// the GPU because the slab test needs min/max, not position/size.
 struct GPUBVHNodePacked {
 	float bounds_min[3]; uint32_t left_first;
 	float bounds_max[3]; uint32_t count;
 };
 static_assert(sizeof(GPUBVHNodePacked) == 32, "GPUBVHNodePacked must be 32 bytes (std430)");
+
+// ============================================================================
+// GPU BVH Node — Aila-Laine format — 64 bytes
+// ============================================================================
+//
+// Based on "Understanding the Efficiency of Ray Traversal on GPUs"
+// (Aila & Laine, HPG 2009) and tinybvh's BVH_GPU layout.
+//
+// KEY INSIGHT: Store BOTH children's AABBs in the parent node.
+// This means traversal needs only ONE memory fetch per step instead of TWO
+// (no need to follow a pointer to the child just to read its AABB).
+// On GPU, this halves memory latency per traversal step — the #1 bottleneck.
+//
+// GLSL layout:
+//   struct GPUBVHNodeWide {
+//       vec3 left_min;  uint left_idx;   // offset  0–15
+//       vec3 left_max;  uint right_idx;  // offset 16–31
+//       vec3 right_min; uint left_count; // offset 32–47
+//       vec3 right_max; uint right_count;// offset 48–63
+//   };
+//
+// Encoding:
+//   count == 0: child is INTERNAL. *_idx = index into this node array.
+//   count >  0: child is LEAF. *_idx = first triangle index. *_count = tri count.
+struct GPUBVHNodeWide {
+	float left_min[3];  uint32_t left_idx;
+	float left_max[3];  uint32_t right_idx;
+	float right_min[3]; uint32_t left_count;
+	float right_max[3]; uint32_t right_count;
+};
+static_assert(sizeof(GPUBVHNodeWide) == 64, "GPUBVHNodeWide must be 64 bytes (std430)");
 
 // ============================================================================
 // GPU Ray — 32 bytes
@@ -95,27 +112,27 @@ struct GPURayPacked {
 static_assert(sizeof(GPURayPacked) == 32, "GPURayPacked must be 32 bytes (std430)");
 
 // ============================================================================
-// GPU Intersection Result — 48 bytes
+// GPU Intersection Result — 32 bytes (compact)
 // ============================================================================
 //
 // GLSL layout:
 //   struct GPUIntersection {
-//       vec3 position; float t;                   // offset  0–15
-//       vec3 normal;   int prim_id;               // offset 16–31
-//       float bary_u;  float bary_v;
-//       uint hit_layers; float _pad;              // offset 32–47
+//       float t; int prim_id; float bary_u; float bary_v;   // offset  0–15
+//       vec3 normal; uint hit_layers;                       // offset 16–31
 //   };
 //
+// BANDWIDTH OPTIMIZATION: Position is NOT stored — the CPU reconstructs it
+// from ray origin + direction * t. This saves 12 bytes per result,
+// reducing readback from 48 bytes to 32 bytes (33% bandwidth reduction).
+// At 1280×960 that's 18.7MB saved per frame in GPU→CPU transfer.
+//
 // prim_id == -1 means "no hit" (the GPU equivalent of Intersection::NO_HIT).
-// bary_u, bary_v = Möller-Trumbore barycentric coordinates.
-// hit_layers = visibility layer bitmask of the hit triangle.
 struct GPUIntersectionPacked {
-	float position[3]; float t;
-	float normal[3];   int32_t prim_id;
+	float t;           int32_t prim_id;
 	float bary_u;      float bary_v;
-	uint32_t hit_layers; float _pad;
+	float normal[3];   uint32_t hit_layers;
 };
-static_assert(sizeof(GPUIntersectionPacked) == 48, "GPUIntersectionPacked must be 48 bytes (std430)");
+static_assert(sizeof(GPUIntersectionPacked) == 32, "GPUIntersectionPacked must be 32 bytes (std430)");
 
 // ============================================================================
 // Push Constants — 16 bytes

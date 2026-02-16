@@ -29,6 +29,7 @@
 #include <vector>
 
 #include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 
 // Forward declarations — avoid pulling heavy Godot headers into every TU
 namespace godot {
@@ -39,6 +40,8 @@ struct Ray;
 struct Triangle;
 struct Intersection;
 struct BVHNode;
+struct GPURayPacked;
+struct GPUIntersectionPacked;
 class BVH;
 
 class GPURayCaster {
@@ -128,6 +131,16 @@ private:
 	bool initialized_ = false;
 	bool scene_uploaded_ = false;
 	bool pending_async_ = false; // True between submit_async and collect
+
+	// ---- Persistent cache (avoid per-frame heap allocation) ----
+	// At 1280×960 these save ~130MB of alloc+free per frame.
+	std::vector<GPURayPacked> gpu_rays_cache_;           // Ray conversion buffer
+	godot::PackedByteArray upload_cache_;                 // Upload staging buffer
+
+	// Stored for position reconstruction in collect_nearest.
+	// The new compact GPUIntersectionPacked (32 bytes) omits position to save
+	// 33% bandwidth. We reconstruct: position = origin + direction * t.
+	const Ray *pending_rays_ = nullptr;
 
 	// ---- Internal helpers ----
 	void free_scene_buffers();

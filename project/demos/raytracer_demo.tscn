@@ -21,6 +21,13 @@ script = ExtResource("1_jv7eu")
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=84043512]
 transform = Transform3D(0.70710677, 0.29883623, -0.6408563, 0, 0.90630776, 0.42261827, 0.70710677, -0.29883623, 0.6408563, 0, 0, 0)
 
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, -5)
+fov = 75.0
+current = true
+
+[node name="RayTracerDebug" type="RayTracerDebug" parent="."]
+
 [node name="Floor" type="MeshInstance3D" parent="." unique_id=363732962]
 transform = Transform3D(5.842283, 0, 0, 0, 1.2956791, 0, 0, 0, 8.619136, 0, -0.5068244, 0)
 mesh = SubResource("PlaneMesh_es7oo")

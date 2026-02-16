@@ -21,16 +21,20 @@
 #   SPACE             — cast debug rays from the camera
 #   TAB               — cycle debug draw mode
 #   R                 — cast a single ray from the probe's position (down)
+#   B                 — cycle backend (CPU/GPU/Auto)
 #   C                 — clear debug visualization
 #   ESC / P           — open settings menu
+#   F1                — toggle keyboard hints
 
 extends Node3D
 
 @onready var probe: RayTracerProbe = $RayTracerProbe
 @onready var debug: RayTracerDebug = $RayTracerDebug
 
-var cam: Camera3D
-var menu: PauseMenu
+@onready var cam: Camera3D = $Camera3D
+var menu: BaseMenu
+var debug_panel: DebugPanel
+var tooltip: TooltipOverlay
 
 # Movement
 var move_speed := 5.0
@@ -44,13 +48,7 @@ var mode_names := ["Rays", "Normals", "Distance", "Heatmap", "Overheat", "BVH", 
 
 
 func _ready() -> void:
-	# ---- Camera ----
-	cam = Camera3D.new()
-	cam.name = "DebugCamera"
-	cam.position = Vector3(0, 2, -5)
-	cam.fov = 75.0
-	add_child(cam)
-	cam.make_current()
+	# ---- Orient camera toward origin ----
 	cam.look_at(Vector3(0, 0, 0))
 	pitch = cam.rotation.x
 	yaw = cam.rotation.y
@@ -58,11 +56,18 @@ func _ready() -> void:
 	# ---- Build (Probe auto-registered its children on _ready) ----
 	RayTracerServer.build()
 
-	# ---- Pause menu ----
-	menu = PauseMenu.new()
-	menu.debug_node = debug
+	# ---- Pause menu (modular) ----
+	menu = preload("res://demos/ui/base_menu.tscn").instantiate()
+	debug_panel = preload("res://demos/ui/debug_panel.tscn").instantiate()
+	debug_panel.debug_node = debug
+	menu.add_panel(debug_panel)
 	menu.cast_callback = _cast_rays_from_camera
+	menu.set_action_label("Cast Rays")
 	add_child(menu)
+
+	tooltip = preload("res://demos/ui/tooltip_overlay.tscn").instantiate()
+	tooltip.hint_text = "[Probe Demo]\nWASD / Arrows — Move camera\nMouse — Look around\nQ / E — Down / Up\n\nSPACE — Cast debug rays\nTAB — Cycle draw mode\nR — Cast probe ray (down)\nB — Cycle backend\nC — Clear debug lines\n\nESC / P — Settings menu\nF1 — Toggle this help"
+	add_child(tooltip)
 
 	# ---- Mouse capture ----
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
@@ -100,6 +105,8 @@ func _input(event: InputEvent) -> void:
 				_cycle_draw_mode()
 			KEY_R:
 				_cast_probe_ray()
+			KEY_B:
+				_cycle_backend()
 			KEY_C:
 				debug.clear_debug()
 				print("Debug cleared")
@@ -136,13 +143,22 @@ func _process(delta: float) -> void:
 func _cast_rays_from_camera() -> void:
 	var origin := cam.global_position
 	var forward := -cam.global_basis.z
-	debug.cast_debug_rays(origin, forward, menu.grid_w, menu.grid_h, cam.fov)
+	debug.cast_debug_rays(origin, forward, debug_panel.grid_w, debug_panel.grid_h, cam.fov)
 
 
 func _cycle_draw_mode() -> void:
 	var next := (debug.debug_draw_mode + 1) % mode_names.size()
 	debug.debug_draw_mode = next
+	debug_panel.sync_from_node()
 	print("Draw mode: ", mode_names[next])
+	_cast_rays_from_camera()
+
+
+func _cycle_backend() -> void:
+	var next := (RayTracerServer.get_backend() + 1) % 3
+	RayTracerServer.set_backend(next)
+	RayTracerServer.build()
+	print("Backend → ", ["CPU", "GPU", "Auto"][next])
 	_cast_rays_from_camera()
 
 

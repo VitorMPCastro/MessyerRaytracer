@@ -1,0 +1,151 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/ui/renderer_panel.gd" id="1_script"]
+
+[node name="RendererPanel" type="VBoxContainer"]
+script = ExtResource("1_script")
+theme_override_constants/separation = 6
+
+[node name="Header" type="Label" parent="."]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "🎨  Renderer"
+
+[node name="ChannelRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="ChannelRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Channel"
+
+[node name="ChannelBtn" type="OptionButton" parent="ChannelRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 7
+popup/item_0/text = "Color"
+popup/item_1/text = "Normal"
+popup/item_1/id = 1
+popup/item_2/text = "Depth"
+popup/item_2/id = 2
+popup/item_3/text = "Barycentric"
+popup/item_3/id = 3
+popup/item_4/text = "Position"
+popup/item_4/id = 4
+popup/item_5/text = "PrimID"
+popup/item_5/id = 5
+popup/item_6/text = "HitMask"
+popup/item_6/id = 6
+
+[node name="ResRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="ResRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Resolution"
+
+[node name="ResBtn" type="OptionButton" parent="ResRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 5
+popup/item_0/text = "160×120"
+popup/item_1/text = "320×240"
+popup/item_1/id = 1
+popup/item_2/text = "640×480"
+popup/item_2/id = 2
+popup/item_3/text = "960×720"
+popup/item_3/id = 3
+popup/item_4/text = "1280×960"
+popup/item_4/id = 4
+
+[node name="Sep1" type="HSeparator" parent="."]
+layout_mode = 2
+
+[node name="DepthRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="DepthRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Depth Range"
+
+[node name="DepthSpin" type="SpinBox" parent="DepthRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 1.0
+max_value = 10000.0
+step = 5.0
+value = 100.0
+
+[node name="PosRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="PosRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Pos. Range"
+
+[node name="PosSpin" type="SpinBox" parent="PosRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.1
+max_value = 10000.0
+step = 1.0
+value = 10.0
+
+[node name="Sep2" type="HSeparator" parent="."]
+layout_mode = 2
+
+[node name="SunLabel" type="Label" parent="."]
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Sun Direction"
+
+[node name="SunRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="SunX" type="SpinBox" parent="SunRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = -1.0
+max_value = 1.0
+step = 0.05
+value = 0.5
+
+[node name="SunY" type="SpinBox" parent="SunRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = -1.0
+max_value = 1.0
+step = 0.05
+value = 0.8
+
+[node name="SunZ" type="SpinBox" parent="SunRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = -1.0
+max_value = 1.0
+step = 0.05
+value = 0.3
+
+[node name="Sep3" type="HSeparator" parent="."]
+layout_mode = 2
+
+[node name="AutoRender" type="CheckBox" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+button_pressed = true
+text = "Auto-render every frame"

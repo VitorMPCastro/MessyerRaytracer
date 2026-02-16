@@ -26,6 +26,7 @@
 //   and invalid after it is destroyed.
 
 #include "api/ray_query.h"
+#include "api/scene_shade_data.h"
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -106,6 +107,12 @@ public:
 
 	/// Get the number of CPU worker threads.
 	virtual int get_thread_count() const = 0;
+
+	// ======== Scene shading data ========
+
+	/// Get a read-only view of the scene's material/UV data for shading.
+	/// Valid after build().  Pointers are stable until the next build().
+	virtual SceneShadeData get_shade_data() const = 0;
 };
 
 /// Returns the global ray service backed by RayTracerServer.

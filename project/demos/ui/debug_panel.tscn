@@ -1,0 +1,172 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://demos/ui/debug_panel.gd" id="1_script"]
+
+[node name="DebugPanel" type="VBoxContainer"]
+script = ExtResource("1_script")
+theme_override_constants/separation = 6
+
+[node name="Header" type="Label" parent="."]
+layout_mode = 2
+theme_override_font_sizes/font_size = 16
+text = "🔍  Debug Visualizer"
+
+[node name="ModeRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="ModeRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Draw Mode"
+
+[node name="ModeBtn" type="OptionButton" parent="ModeRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+item_count = 7
+popup/item_0/text = "Rays"
+popup/item_1/text = "Normals"
+popup/item_1/id = 1
+popup/item_2/text = "Distance"
+popup/item_2/id = 2
+popup/item_3/text = "Heatmap"
+popup/item_3/id = 3
+popup/item_4/text = "Overheat"
+popup/item_4/id = 4
+popup/item_5/text = "BVH"
+popup/item_5/id = 5
+popup/item_6/text = "Layers"
+popup/item_6/id = 6
+
+[node name="GridRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="GridRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Grid W×H"
+
+[node name="GridW" type="SpinBox" parent="GridRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 4.0
+max_value = 128.0
+step = 4.0
+value = 16.0
+
+[node name="X" type="Label" parent="GridRow"]
+layout_mode = 2
+text = "×"
+
+[node name="GridH" type="SpinBox" parent="GridRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 4.0
+max_value = 96.0
+step = 4.0
+value = 12.0
+
+[node name="Sep1" type="HSeparator" parent="."]
+layout_mode = 2
+
+[node name="MissRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="MissRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Miss Length"
+
+[node name="MissSpin" type="SpinBox" parent="MissRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.5
+max_value = 200.0
+step = 0.5
+value = 20.0
+
+[node name="NormRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="NormRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Normal Length"
+
+[node name="NormSpin" type="SpinBox" parent="NormRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 0.01
+max_value = 5.0
+step = 0.05
+value = 0.3
+
+[node name="Sep2" type="HSeparator" parent="."]
+layout_mode = 2
+
+[node name="HeatDistRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="HeatDistRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Heatmap Dist"
+
+[node name="HeatDistSpin" type="SpinBox" parent="HeatDistRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 1.0
+max_value = 500.0
+step = 5.0
+value = 50.0
+
+[node name="HeatCostRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="HeatCostRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "Heatmap Cost"
+
+[node name="HeatCostSpin" type="SpinBox" parent="HeatCostRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = 1.0
+max_value = 500.0
+step = 5.0
+value = 50.0
+
+[node name="BvhRow" type="HBoxContainer" parent="."]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Label" type="Label" parent="BvhRow"]
+custom_minimum_size = Vector2(120, 0)
+layout_mode = 2
+text = "BVH Depth"
+
+[node name="BvhSpin" type="SpinBox" parent="BvhRow"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+min_value = -1.0
+max_value = 32.0
+step = 1.0
+value = 0.0
+
+[node name="ClearBtn" type="Button" parent="."]
+unique_name_in_owner = true
+layout_mode = 2
+text = "  Clear Debug  "

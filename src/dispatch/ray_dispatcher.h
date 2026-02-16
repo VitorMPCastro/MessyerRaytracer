@@ -105,21 +105,28 @@ public:
 	// CPU path is automatically parallelized: the ray array is split across
 	// worker threads, each traversing the BVH independently.
 	void cast_rays(const Ray *rays, Intersection *results, int count,
-			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) {
+			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF,
+			bool coherent = false) {
 		RT_ASSERT(count >= 0, "RayDispatcher::cast_rays: count must be non-negative");
 		RT_ASSERT(count == 0 || rays != nullptr, "RayDispatcher::cast_rays: rays is null");
 		RT_ASSERT(count == 0 || results != nullptr, "RayDispatcher::cast_rays: results is null");
 		if (using_gpu()) {
-			// Sort rays by direction for warp coherence, dispatch, unshuffle results.
-			if (count >= MIN_BATCH_FOR_SORTING) {
-				std::vector<uint32_t> perm;
-				std::vector<Ray> sorted_rays;
-				sort_rays_by_direction(rays, count, perm);
-				apply_ray_permutation(rays, perm, sorted_rays);
+			// Skip sort for coherent rays (e.g. primary camera rays).
+			// Primary rays from a camera already have spatial coherence —
+			// adjacent pixels map to nearby directions. Sorting them is pure
+			// waste: O(N log N) sort + 3 full-array copies for zero benefit.
+			if (!coherent && count >= MIN_BATCH_FOR_SORTING) {
+				sync_perm_.clear();
+				sort_rays_by_direction(rays, count, sync_perm_);
 
-				std::vector<Intersection> sorted_results(count);
-				gpu_caster_.cast_rays(sorted_rays.data(), sorted_results.data(), count, query_mask);
-				unshuffle_intersections(sorted_results.data(), perm, results);
+				sync_sorted_rays_.resize(count);
+				for (int i = 0; i < count; i++) {
+					sync_sorted_rays_[i] = rays[sync_perm_[i]];
+				}
+
+				sync_sorted_results_.resize(count);
+				gpu_caster_.cast_rays(sync_sorted_rays_.data(), sync_sorted_results_.data(), count, query_mask);
+				unshuffle_intersections(sync_sorted_results_.data(), sync_perm_, results);
 			} else {
 				gpu_caster_.cast_rays(rays, results, count, query_mask);
 			}
@@ -163,23 +170,25 @@ public:
 	//
 	// CPU path is automatically parallelized (same as cast_rays).
 	void any_hit_rays(const Ray *rays, bool *hit_results, int count,
-			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) {
+			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF,
+			bool coherent = false) {
 		RT_ASSERT(count >= 0, "RayDispatcher::any_hit_rays: count must be non-negative");
 		RT_ASSERT(count == 0 || rays != nullptr, "RayDispatcher::any_hit_rays: rays is null");
 		RT_ASSERT(count == 0 || hit_results != nullptr, "RayDispatcher::any_hit_rays: hit_results is null");
 		if (using_gpu()) {
-			if (count >= MIN_BATCH_FOR_SORTING) {
-				std::vector<uint32_t> perm;
-				std::vector<Ray> sorted_rays;
-				sort_rays_by_direction(rays, count, perm);
-				apply_ray_permutation(rays, perm, sorted_rays);
+			if (!coherent && count >= MIN_BATCH_FOR_SORTING) {
+				sync_perm_.clear();
+				sort_rays_by_direction(rays, count, sync_perm_);
 
-				std::vector<bool> sorted_results(count);
-				// std::vector<bool> is bit-packed — need a plain array for data ptr.
-				bool *sorted_buf = new bool[count];
-				gpu_caster_.cast_rays_any_hit(sorted_rays.data(), sorted_buf, count, query_mask);
-				unshuffle_bools(sorted_buf, perm, hit_results);
-				delete[] sorted_buf;
+				sync_sorted_rays_.resize(count);
+				for (int i = 0; i < count; i++) {
+					sync_sorted_rays_[i] = rays[sync_perm_[i]];
+				}
+
+				sync_any_hit_buf_.resize(count);
+				bool *hit_buf = reinterpret_cast<bool *>(sync_any_hit_buf_.data());
+				gpu_caster_.cast_rays_any_hit(sync_sorted_rays_.data(), hit_buf, count, query_mask);
+				unshuffle_bools(hit_buf, sync_perm_, hit_results);
 			} else {
 				gpu_caster_.cast_rays_any_hit(rays, hit_results, count, query_mask);
 			}
@@ -344,6 +353,13 @@ private:
 	GPURayCaster gpu_caster_;
 	ThreadPool pool_;            // Persistent worker threads for CPU dispatch
 	Backend backend_ = Backend::CPU;
+
+	// Synchronous dispatch reuse buffers (avoid per-frame heap allocation).
+	// At 1280×960 these save ~140 MB of alloc+free per frame.
+	std::vector<uint32_t> sync_perm_;
+	std::vector<Ray> sync_sorted_rays_;
+	std::vector<Intersection> sync_sorted_results_;
+	std::vector<uint8_t> sync_any_hit_buf_;
 
 	// Async dispatch state (reused to avoid per-frame allocation)
 	std::vector<uint32_t> async_perm_;

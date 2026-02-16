@@ -1,0 +1,73 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://demos/renderer_demo.gd" id="1_rdemo"]
+
+[sub_resource type="PlaneMesh" id="PlaneMesh_floor"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_sphere"]
+albedo_color = Color(0.51, 0.15, 0.11, 1)
+
+[sub_resource type="SphereMesh" id="SphereMesh_main"]
+material = SubResource("Mat_sphere")
+
+[sub_resource type="BoxMesh" id="BoxMesh_main"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_box"]
+albedo_color = Color(0.09, 0.16, 0.40, 1)
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_main"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_cylinder"]
+albedo_color = Color(0.15, 0.45, 0.20, 1)
+
+[node name="RendererDemo" type="Node3D"]
+script = ExtResource("1_rdemo")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, -5)
+fov = 75.0
+current = true
+
+[node name="RayRenderer" type="RayRenderer" parent="."]
+resolution = Vector2i(320, 240)
+camera_path = NodePath("../Camera3D")
+
+[node name="Display" type="CanvasLayer" parent="."]
+
+[node name="RenderView" type="TextureRect" parent="Display"]
+unique_name_in_owner = true
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+stretch_mode = 5
+texture_filter = 1
+
+[node name="HUD" type="Label" parent="Display"]
+unique_name_in_owner = true
+offset_left = 10.0
+offset_top = 10.0
+theme_override_colors/font_color = Color(1, 1, 0.6, 1)
+theme_override_font_sizes/font_size = 16
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.70710677, 0.29883623, -0.6408563, 0, 0.90630776, 0.42261827, 0.70710677, -0.29883623, 0.6408563, 0, 0, 0)
+
+[node name="Floor" type="MeshInstance3D" parent="."]
+transform = Transform3D(8, 0, 0, 0, 1, 0, 0, 0, 8, 0, -0.5, 0)
+mesh = SubResource("PlaneMesh_floor")
+
+[node name="Sphere" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.5, 0.5, 0)
+mesh = SubResource("SphereMesh_main")
+
+[node name="Box" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1.5, 0.5, 0)
+mesh = SubResource("BoxMesh_main")
+surface_material_override/0 = SubResource("Mat_box")
+
+[node name="Cylinder" type="MeshInstance3D" parent="."]
+transform = Transform3D(0.6, 0, 0, 0, 0.6, 0, 0, 0, 0.6, 0, 0.0, 2)
+mesh = SubResource("CylinderMesh_main")
+surface_material_override/0 = SubResource("Mat_cylinder")
