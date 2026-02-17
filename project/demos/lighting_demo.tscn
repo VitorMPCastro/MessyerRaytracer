@@ -1,0 +1,113 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://demos/lighting_demo.gd" id="1_script"]
+[ext_resource type="ArrayMesh" path="res://assets/meshes/room_box.obj" id="2_room"]
+[ext_resource type="ArrayMesh" path="res://assets/meshes/uv_sphere.obj" id="3_sphere"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_room"]
+albedo_color = Color(0.75, 0.73, 0.70, 1)
+
+[sub_resource type="StandardMaterial3D" id="Mat_chrome"]
+albedo_color = Color(0.9, 0.9, 0.92, 1)
+metallic = 0.95
+roughness = 0.05
+
+[sub_resource type="StandardMaterial3D" id="Mat_diffuse"]
+albedo_color = Color(0.8, 0.8, 0.75, 1)
+roughness = 0.85
+
+[sub_resource type="StandardMaterial3D" id="Mat_gold"]
+albedo_color = Color(1, 0.84, 0.0, 1)
+metallic = 0.85
+roughness = 0.2
+
+[sub_resource type="StandardMaterial3D" id="Mat_floor_checker"]
+albedo_color = Color(0.6, 0.6, 0.6, 1)
+
+[sub_resource type="BoxMesh" id="CubeMesh"]
+material = SubResource("Mat_gold")
+size = Vector3(1.2, 1.2, 1.2)
+
+[node name="LightingDemo" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.97437, 0.22495, 0, -0.22495, 0.97437, 0, 2.5, 6)
+fov = 65.0
+
+[node name="RaySceneSetup" type="RaySceneSetup" parent="."]
+tonemap_mode = 3
+
+[node name="RayRenderer" type="RayRenderer" parent="."]
+camera_path = NodePath("../Camera3D")
+resolution = Vector2i(640, 480)
+
+[node name="Display" type="CanvasLayer" parent="."]
+
+[node name="RenderView" type="TextureRect" parent="Display"]
+unique_name_in_owner = true
+texture_filter = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+stretch_mode = 5
+
+[node name="HUD" type="Label" parent="Display"]
+unique_name_in_owner = true
+offset_left = 10.0
+offset_top = 10.0
+theme_override_colors/font_color = Color(1, 1, 0.6, 1)
+theme_override_font_sizes/font_size = 16
+
+[node name="Room" type="MeshInstance3D" parent="."]
+mesh = ExtResource("2_room")
+surface_material_override/0 = SubResource("Mat_room")
+
+[node name="OmniRed" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.5, 2.5, -1)
+light_color = Color(1, 0.25, 0.15, 1)
+light_energy = 4.0
+omni_range = 6.0
+omni_attenuation = 1.5
+shadow_enabled = true
+
+[node name="OmniBlue" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 2.5, -1)
+light_color = Color(0.2, 0.4, 1.0, 1)
+light_energy = 4.0
+omni_range = 6.0
+omni_attenuation = 1.5
+shadow_enabled = true
+
+[node name="OmniGreen" type="OmniLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -3)
+light_color = Color(0.2, 0.9, 0.3, 1)
+light_energy = 3.0
+omni_range = 5.0
+omni_attenuation = 1.5
+shadow_enabled = true
+
+[node name="SpotWhite" type="SpotLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 3.8, 0)
+light_color = Color(1, 0.95, 0.9, 1)
+light_energy = 5.0
+spot_range = 6.0
+spot_angle = 30.0
+spot_attenuation = 1.2
+shadow_enabled = true
+
+[node name="SphereCenter" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
+mesh = ExtResource("3_sphere")
+surface_material_override/0 = SubResource("Mat_chrome")
+
+[node name="SphereDiffuse" type="MeshInstance3D" parent="."]
+transform = Transform3D(0.7, 0, 0, 0, 0.7, 0, 0, 0, 0.7, -2.2, 0.7, 1.5)
+mesh = ExtResource("3_sphere")
+surface_material_override/0 = SubResource("Mat_diffuse")
+
+[node name="CubeRight" type="MeshInstance3D" parent="."]
+transform = Transform3D(0.9659, 0, -0.2588, 0, 1, 0, 0.2588, 0, 0.9659, 2.2, 0.6, 1.5)
+mesh = SubResource("CubeMesh")

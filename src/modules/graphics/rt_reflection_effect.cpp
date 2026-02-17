@@ -118,6 +118,8 @@ void RTReflectionEffect::_on_render(RenderData *render_data,
 									Ref<RenderSceneBuffersRD> scene_buffers,
 									RenderSceneData *scene_data,
 									const Vector2i &render_size) {
+	RT_ASSERT(render_size.x > 0 && render_size.y > 0, "_on_render: render size must be positive");
+	RT_ASSERT(scene_buffers.is_valid(), "_on_render: scene_buffers must be valid");
 	// Skip if BVH not uploaded or pipelines invalid.
 	if (!has_scene_data()) { return; }
 	if (!trace_pipeline_.is_valid()) { return; }
@@ -147,6 +149,8 @@ void RTReflectionEffect::_on_render(RenderData *render_data,
 
 void RTReflectionEffect::_ensure_textures(const Ref<RenderSceneBuffersRD> &scene_buffers,
 										  const Vector2i &size) {
+	RT_ASSERT(scene_buffers.is_valid(), "_ensure_textures: scene_buffers must be valid");
+	RT_ASSERT(size.x > 0 && size.y > 0, "_ensure_textures: size must be positive");
 	// Use RGBA16F for all intermediate textures (HDR-capable).
 	// Usage bits: SAMPLING (read as sampler) + STORAGE (write as image) + CAN_COPY (for history swap).
 	const RenderingDevice::DataFormat format = RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT;
@@ -181,6 +185,8 @@ void RTReflectionEffect::_ensure_textures(const Ref<RenderSceneBuffersRD> &scene
 void RTReflectionEffect::_pass_trace(const Ref<RenderSceneBuffersRD> &scene_buffers,
 									 RenderSceneData *scene_data,
 									 const Vector2i &size) {
+	RT_ASSERT(trace_pipeline_.is_valid(), "_pass_trace: trace pipeline must be compiled");
+	RT_ASSERT(size.x > 0 && size.y > 0, "_pass_trace: size must be positive");
 	begin_compute_label("RT Reflections: Trace");
 
 	RenderingDevice *device = rd();
@@ -247,6 +253,8 @@ void RTReflectionEffect::_pass_trace(const Ref<RenderSceneBuffersRD> &scene_buff
 
 void RTReflectionEffect::_pass_spatial_denoise(const Ref<RenderSceneBuffersRD> &scene_buffers,
 											   const Vector2i &size) {
+	RT_ASSERT(spatial_pipeline_.is_valid(), "_pass_spatial_denoise: pipeline must be compiled");
+	RT_ASSERT(size.x > 0 && size.y > 0, "_pass_spatial_denoise: size must be positive");
 	begin_compute_label("RT Reflections: Spatial Denoise");
 
 	RenderingDevice *device = rd();
@@ -302,6 +310,8 @@ void RTReflectionEffect::_pass_spatial_denoise(const Ref<RenderSceneBuffersRD> &
 
 void RTReflectionEffect::_pass_temporal_denoise(const Ref<RenderSceneBuffersRD> &scene_buffers,
 												const Vector2i &size) {
+	RT_ASSERT(temporal_pipeline_.is_valid(), "_pass_temporal_denoise: pipeline must be compiled");
+	RT_ASSERT(size.x > 0 && size.y > 0, "_pass_temporal_denoise: size must be positive");
 	begin_compute_label("RT Reflections: Temporal Denoise");
 
 	RenderingDevice *device = rd();
@@ -370,6 +380,8 @@ void RTReflectionEffect::_pass_temporal_denoise(const Ref<RenderSceneBuffersRD> 
 void RTReflectionEffect::_pass_composite(const Ref<RenderSceneBuffersRD> &scene_buffers,
 										 RenderSceneData *scene_data,
 										 const Vector2i &size) {
+	RT_ASSERT(composite_pipeline_.is_valid(), "_pass_composite: pipeline must be compiled");
+	RT_ASSERT(size.x > 0 && size.y > 0, "_pass_composite: size must be positive");
 	begin_compute_label("RT Reflections: Composite");
 
 	RenderingDevice *device = rd();
@@ -426,6 +438,8 @@ void RTReflectionEffect::_pass_composite(const Ref<RenderSceneBuffersRD> &scene_
 // ============================================================================
 
 void RTReflectionEffect::_projection_to_floats(const Projection &proj, float out[16]) {
+	RT_ASSERT_NOT_NULL(out);
+	RT_ASSERT(std::isfinite(proj.columns[0].x), "_projection_to_floats: projection must be finite");
 	// Projection stores as columns[4], each is Vector4.
 	// GLSL mat4 is column-major: out[0..3] = column 0, etc.
 	for (int col = 0; col < 4; col++) {
@@ -438,6 +452,8 @@ void RTReflectionEffect::_projection_to_floats(const Projection &proj, float out
 }
 
 void RTReflectionEffect::_transform_to_floats(const Transform3D &xform, float out[16]) {
+	RT_ASSERT_NOT_NULL(out);
+	RT_ASSERT(xform.origin.is_finite(), "_transform_to_floats: transform origin must be finite");
 	// Transform3D has basis (3x3) + origin. Convert to 4x4 column-major.
 	// Column 0 = basis.get_column(0), Column 3 = origin
 	const Basis &b = xform.basis;

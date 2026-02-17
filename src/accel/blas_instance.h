@@ -66,6 +66,7 @@ struct BLASInstance {
 		// Normal is transformed by the transpose of the inverse of the upper-left 3x3.
 		// For uniform scaling, this simplifies to basis.xform(normal).normalized().
 		hit.normal = transform.basis.xform(hit.normal).normalized();
+		RT_ASSERT(hit.normal.length_squared() > 0.0f, "Normal must not be degenerate after world transform");
 	}
 
 	// Compute world_bounds from a given object-space AABB.

@@ -100,6 +100,8 @@ static void register_recursive_helper(Node *node, RayTracerServer *server,
 }
 
 void RayTracerProbe::register_children_recursive() {
+	RT_ASSERT(is_inside_tree(), "register_children_recursive: probe must be in scene tree");
+	RT_ASSERT(get_child_count() >= 0, "register_children_recursive: child count must be non-negative");
 	RayTracerServer *server = RayTracerServer::get_singleton();
 	if (!server) {
 		UtilityFunctions::print("[RayTracerProbe] Server not available");
@@ -116,9 +118,11 @@ void RayTracerProbe::unregister_children() {
 	if (!server) { return; }
 
 	for (int id : registered_ids_) {
+		RT_ASSERT(id >= 0, "unregister_children: mesh ID must be non-negative");
 		server->unregister_mesh(id);
 	}
 	registered_ids_.clear();
+	RT_ASSERT(registered_ids_.empty(), "unregister_children: IDs not cleared");
 }
 
 // ============================================================================
@@ -126,6 +130,8 @@ void RayTracerProbe::unregister_children() {
 // ============================================================================
 
 Dictionary RayTracerProbe::cast_ray(const Vector3 &direction) {
+	RT_ASSERT(direction.length_squared() > 0.0f, "cast_ray: direction must not be zero");
+	RT_ASSERT(is_inside_tree(), "cast_ray: probe must be in the scene tree");
 	RayTracerServer *server = RayTracerServer::get_singleton();
 	if (!server) {
 		Dictionary empty;
@@ -136,6 +142,8 @@ Dictionary RayTracerProbe::cast_ray(const Vector3 &direction) {
 }
 
 bool RayTracerProbe::any_hit(const Vector3 &direction, float max_distance) {
+	RT_ASSERT(direction.length_squared() > 0.0f, "any_hit: direction must not be zero");
+	RT_ASSERT(max_distance > 0.0f, "any_hit: max_distance must be positive");
 	RayTracerServer *server = RayTracerServer::get_singleton();
 	if (!server) { return false; }
 	return server->any_hit(get_global_position(), direction, max_distance, layer_mask_);

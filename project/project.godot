@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="raytracer"
-run/main_scene="uid://v4xnvttls3wu"
+run/main_scene="uid://cc0lb77fe8nq1"
 config/features=PackedStringArray("4.6", "Forward Plus")
 config/icon="res://demos/icon.svg"
 

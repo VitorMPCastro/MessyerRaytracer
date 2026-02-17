@@ -156,6 +156,7 @@ vec3 safe_inv_direction(vec3 dir) {
 // Local arrays are fine at 16x16 since the stack is small per thread.
 
 const uint STACK_DEPTH = 24u;
+const uint MAX_ITERATIONS = 65536u;  // Safety: prevent infinite loops from corrupt BVH data.
 
 bool trace_bvh(vec3 origin, vec3 direction, float t_min, float t_max,
                out float hit_t, out vec3 hit_pos, out vec3 hit_normal) {
@@ -164,6 +165,14 @@ bool trace_bvh(vec3 origin, vec3 direction, float t_min, float t_max,
     vec3 best_pos = vec3(0.0);
     vec3 best_normal = vec3(0.0);
     bool found_hit = false;
+
+    // Early exit for degenerate rays.
+    if (t_min >= t_max) {
+        hit_t = t_max;
+        hit_pos = vec3(0.0);
+        hit_normal = vec3(0.0);
+        return false;
+    }
 
     // Test root AABB
     float root_tmin, root_tmax;
@@ -184,7 +193,9 @@ bool trace_bvh(vec3 origin, vec3 direction, float t_min, float t_max,
     stack_tmin[0] = root_tmin;
     sp = 1;
 
-    while (sp > 0) {
+    uint iterations = 0u;
+    while (sp > 0 && iterations < MAX_ITERATIONS) {
+        iterations++;
         sp--;
         uint node_idx = stack_node[sp];
         float entry_tmin = stack_tmin[sp];
@@ -227,17 +238,27 @@ bool trace_bvh(vec3 origin, vec3 direction, float t_min, float t_max,
             hit_r = hit_r && (tmin_r <= best_t);
 
             if (hit_l && hit_r) {
+                // Push far child first (LIFO → near child processed first).
+                // Clamp sp to prevent stack overflow on pathological trees.
                 if (tmin_l < tmin_r) {
-                    stack_node[sp] = right; stack_tmin[sp] = tmin_r; sp++;
-                    stack_node[sp] = left;  stack_tmin[sp] = tmin_l; sp++;
+                    if (sp < int(STACK_DEPTH) - 1) {
+                        stack_node[sp] = right; stack_tmin[sp] = tmin_r; sp++;
+                        stack_node[sp] = left;  stack_tmin[sp] = tmin_l; sp++;
+                    }
                 } else {
-                    stack_node[sp] = left;  stack_tmin[sp] = tmin_l; sp++;
-                    stack_node[sp] = right; stack_tmin[sp] = tmin_r; sp++;
+                    if (sp < int(STACK_DEPTH) - 1) {
+                        stack_node[sp] = left;  stack_tmin[sp] = tmin_l; sp++;
+                        stack_node[sp] = right; stack_tmin[sp] = tmin_r; sp++;
+                    }
                 }
             } else if (hit_l) {
-                stack_node[sp] = left; stack_tmin[sp] = tmin_l; sp++;
+                if (sp < int(STACK_DEPTH)) {
+                    stack_node[sp] = left; stack_tmin[sp] = tmin_l; sp++;
+                }
             } else if (hit_r) {
-                stack_node[sp] = right; stack_tmin[sp] = tmin_r; sp++;
+                if (sp < int(STACK_DEPTH)) {
+                    stack_node[sp] = right; stack_tmin[sp] = tmin_r; sp++;
+                }
             }
         }
     }

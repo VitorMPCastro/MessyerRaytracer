@@ -3,13 +3,7 @@
 #include "modules/graphics/ray_renderer.h"
 #include "modules/graphics/shade_pass.h"
 #include "api/ray_service.h"
-// NOTE: dispatch/thread_pool.h is included here despite the module decoupling rule
-// (modules should only include api/ and core/). This is a justified exception:
-// RayRenderer parallelizes per-pixel shading across CPU cores, which is module-level
-// work (not ray tracing). IRayService handles ray batch dispatch but not pixel
-// shading. Exposing ThreadPool through an API abstraction would add complexity
-// with no decoupling benefit — only RayRenderer uses it for this purpose.
-#include "dispatch/thread_pool.h"
+#include "api/thread_dispatch.h"
 #include "core/asserts.h"
 
 #include <godot_cpp/core/class_db.hpp>
@@ -29,7 +23,7 @@ using namespace godot;
 // ============================================================================
 
 RayRenderer::RayRenderer()
-	: pool_(std::make_unique<ThreadPool>()) {}
+	: pool_(create_thread_dispatch()) {}
 RayRenderer::~RayRenderer() = default;
 
 // ============================================================================
@@ -129,6 +123,9 @@ void RayRenderer::render_frame() {
 	DirectionalLight3D *light = _resolve_light();
 	WorldEnvironment *world_env = _resolve_environment();
 
+	// Discover all lights (directional, omni, spot) from the scene tree.
+	SceneLightData scene_lights = _resolve_all_lights();
+
 	// Read sun direction from the DirectionalLight3D (its -Z axis in world space).
 	// Fallback: straight down if no light found.
 	Vector3 sun_dir = Vector3(0.0f, -1.0f, 0.0f);
@@ -146,12 +143,12 @@ void RayRenderer::render_frame() {
 	_trace_rays(svc);
 	auto t2 = Clock::now();
 
-	// 3. Trace shadow rays (sun direction, any-hit)
-	_trace_shadow_rays(svc, sun_dir);
+	// 3. Trace shadow rays (per light, any-hit)
+	_trace_shadow_rays(svc, scene_lights);
 	auto t3 = Clock::now();
 
 	// 4. Shade all AOV channels (passes resolved scene nodes for Godot-native reads)
-	_shade_results(cam, light, world_env);
+	_shade_results(cam, scene_lights, world_env);
 	auto t4 = Clock::now();
 
 	// 5. Accumulate (anti-aliasing temporal blend) and convert → Image → ImageTexture
@@ -168,6 +165,42 @@ void RayRenderer::render_frame() {
 	shade_ms_   = to_ms(t4 - t3);
 	convert_ms_ = to_ms(t5 - t4);
 	total_ms_   = to_ms(t5 - t_start);
+
+	// ---- Stall detection: log per-phase breakdown when a frame is abnormally slow ----
+	// Normal frame is ~20-30ms at 640×480 CPU. Anything beyond 100ms indicates a stall.
+	// Also tracks inter-frame gap (time between render_frame calls = Godot's own rendering).
+	{
+		static Clock::time_point last_frame_end = Clock::time_point{};
+		static int frame_counter = 0;
+		frame_counter++;
+
+		float gap_ms = 0.0f;
+		if (last_frame_end != Clock::time_point{}) {
+			gap_ms = to_ms(t_start - last_frame_end);
+		}
+		last_frame_end = t5;
+
+		// Log when our render takes too long.
+		if (total_ms_ > 100.0f) {
+			UtilityFunctions::print(
+				"[RayRenderer] STALL frame #", frame_counter,
+				": total=", String::num(total_ms_, 1), "ms"
+				" (gen=", String::num(raygen_ms_, 1),
+				" trace=", String::num(trace_ms_, 1),
+				" shadow=", String::num(shadow_ms_, 1),
+				" shade=", String::num(shade_ms_, 1),
+				" convert=", String::num(convert_ms_, 1),
+				") gap=", String::num(gap_ms, 1), "ms"
+				" res=", resolution_.x, "x", resolution_.y);
+		}
+
+		// Log when Godot's own processing between our frames takes too long.
+		if (gap_ms > 100.0f) {
+			UtilityFunctions::print(
+				"[RayRenderer] GAP STALL frame #", frame_counter,
+				": gap=", String::num(gap_ms, 1), "ms (Godot main-loop overhead)");
+		}
+	}
 
 	emit_signal("frame_completed");
 }
@@ -247,6 +280,77 @@ WorldEnvironment *RayRenderer::_resolve_environment() const {
 
 	WARN_PRINT_ONCE("RayRenderer: No WorldEnvironment found in scene — using fallback sky/tonemapping.");
 	return nullptr;
+}
+
+/// Discover all light nodes (DirectionalLight3D, OmniLight3D, SpotLight3D)
+/// in the scene tree and populate a SceneLightData struct.
+/// Reads position, direction, color, energy, range, and attenuation per frame.
+SceneLightData RayRenderer::_resolve_all_lights() const {
+	RT_ASSERT(is_inside_tree(), "_resolve_all_lights called before node entered tree");
+	RT_ASSERT(get_tree() != nullptr, "SceneTree must be available for light resolution");
+
+	SceneLightData result;
+
+	Node *root = const_cast<RayRenderer *>(this)->get_tree()
+		? const_cast<RayRenderer *>(this)->get_tree()->get_current_scene()
+		: nullptr;
+	if (!root) { return result; }
+
+	// --- Directional lights ---
+	TypedArray<Node> dir_lights = root->find_children("*", "DirectionalLight3D", true, false);
+	for (int i = 0; i < dir_lights.size() && result.light_count < MAX_SCENE_LIGHTS; i++) {
+		DirectionalLight3D *dl = Object::cast_to<DirectionalLight3D>(Object::cast_to<Node>(dir_lights[i]));
+		if (!dl || !dl->is_visible_in_tree()) { continue; }
+
+		LightData &ld = result.lights[result.light_count++];
+		ld.type = LightData::DIRECTIONAL;
+		// Direction toward the light = negative forward axis.
+		ld.direction = (-dl->get_global_transform().basis.get_column(2)).normalized();
+		Color c = dl->get_color();
+		float energy = dl->get_param(Light3D::PARAM_ENERGY);
+		ld.color = Vector3(c.r, c.g, c.b) * energy;
+		ld.cast_shadows = dl->has_shadow();
+	}
+
+	// --- Omni (point) lights ---
+	TypedArray<Node> omni_lights = root->find_children("*", "OmniLight3D", true, false);
+	for (int i = 0; i < omni_lights.size() && result.light_count < MAX_SCENE_LIGHTS; i++) {
+		OmniLight3D *ol = Object::cast_to<OmniLight3D>(Object::cast_to<Node>(omni_lights[i]));
+		if (!ol || !ol->is_visible_in_tree()) { continue; }
+
+		LightData &ld = result.lights[result.light_count++];
+		ld.type = LightData::POINT;
+		ld.position = ol->get_global_position();
+		Color c = ol->get_color();
+		float energy = ol->get_param(Light3D::PARAM_ENERGY);
+		ld.color = Vector3(c.r, c.g, c.b) * energy;
+		ld.range = ol->get_param(Light3D::PARAM_RANGE);
+		ld.attenuation = ol->get_param(Light3D::PARAM_ATTENUATION);
+		ld.cast_shadows = ol->has_shadow();
+	}
+
+	// --- Spot lights ---
+	TypedArray<Node> spot_lights = root->find_children("*", "SpotLight3D", true, false);
+	for (int i = 0; i < spot_lights.size() && result.light_count < MAX_SCENE_LIGHTS; i++) {
+		SpotLight3D *sl = Object::cast_to<SpotLight3D>(Object::cast_to<Node>(spot_lights[i]));
+		if (!sl || !sl->is_visible_in_tree()) { continue; }
+
+		LightData &ld = result.lights[result.light_count++];
+		ld.type = LightData::SPOT;
+		ld.position = sl->get_global_position();
+		// Spot light forward direction (the cone axis) is -Z in local space.
+		ld.direction = (-sl->get_global_transform().basis.get_column(2)).normalized();
+		Color c = sl->get_color();
+		float energy = sl->get_param(Light3D::PARAM_ENERGY);
+		ld.color = Vector3(c.r, c.g, c.b) * energy;
+		ld.range = sl->get_param(Light3D::PARAM_RANGE);
+		ld.attenuation = sl->get_param(Light3D::PARAM_ATTENUATION);
+		ld.spot_angle = Math::deg_to_rad(sl->get_param(Light3D::PARAM_SPOT_ANGLE));
+		ld.spot_angle_attenuation = sl->get_param(Light3D::PARAM_SPOT_ATTENUATION);
+		ld.cast_shadows = sl->has_shadow();
+	}
+
+	return result;
 }
 
 void RayRenderer::_generate_rays(Camera3D *cam) {
@@ -357,56 +461,97 @@ void RayRenderer::_trace_rays(IRayService *svc) {
 	svc->submit(query, result);
 }
 
-void RayRenderer::_trace_shadow_rays(IRayService *svc, const Vector3 &sun_dir) {
+void RayRenderer::_trace_shadow_rays(IRayService *svc, const SceneLightData &lights) {
 	RT_ASSERT_NOT_NULL(svc);
-	RT_ASSERT(sun_dir.is_finite(), "Shadow ray sun direction must be finite");
+	RT_ASSERT(lights.light_count >= 0 && lights.light_count <= MAX_SCENE_LIGHTS,
+		"Light count must be in [0, MAX_SCENE_LIGHTS]");
 
 	int count = static_cast<int>(hits_.size());
-	shadow_mask_.resize(count);
+	int num_lights = lights.light_count;
 
-	// If shadows are disabled, mark everything as lit.
-	if (!shadows_enabled_) {
+	// Shadow mask layout: [light_0_pixel_0, light_0_pixel_1, ..., light_1_pixel_0, ...]
+	// Total size = num_lights * count.  Each light gets a contiguous block.
+	int total_shadow = num_lights * count;
+	shadow_mask_.resize(total_shadow > 0 ? total_shadow : count);
+
+	// If shadows are disabled or no lights, mark everything as lit.
+	if (!shadows_enabled_ || num_lights == 0) {
 		std::fill(shadow_mask_.begin(), shadow_mask_.end(), static_cast<uint8_t>(1));
 		return;
 	}
 
-	// Build shadow rays: from hit point toward the sun.
+	// Build shadow rays: from hit point toward each light.
 	// Offset origin along the geometric normal to avoid self-intersection.
 	static constexpr float SHADOW_BIAS = 1e-3f;
-	static constexpr float SHADOW_MAX_DIST = 1000.0f;
+	static constexpr float DIR_LIGHT_MAX_DIST = 1000.0f;
 
-	shadow_rays_.resize(count);
+	shadow_rays_.resize(total_shadow);
 
-	pool_->dispatch_and_wait(count, 256, [this, sun_dir, count](int start, int end) {
-		for (int i = start; i < end; i++) {
-			if (hits_[i].hit()) {
-				Vector3 origin = hits_[i].position + hits_[i].normal * SHADOW_BIAS;
-				shadow_rays_[i] = Ray(origin, sun_dir, 0.0f, SHADOW_MAX_DIST);
-			} else {
-				// Miss pixels — create a degenerate ray that won't hit anything.
-				shadow_rays_[i] = Ray(Vector3(0, 0, 0), Vector3(0, 1, 0), 0.0f, 0.0f);
-			}
+	// For each light, generate shadow rays for all pixels.
+	for (int li = 0; li < num_lights; li++) {
+		const LightData &ld = lights.lights[li];
+		int base = li * count;
+
+		if (!ld.cast_shadows) {
+			// No shadows for this light — mark all pixels as lit.
+			std::fill(shadow_mask_.begin() + base, shadow_mask_.begin() + base + count,
+				static_cast<uint8_t>(1));
+			// Still need to fill shadow_rays_ with degenerate rays for batch consistency.
+			pool_->dispatch_and_wait(count, 256, [this, base](int start, int end) {
+				for (int i = start; i < end; i++) {
+					shadow_rays_[base + i] = Ray(Vector3(0, 0, 0), Vector3(0, 1, 0), 0.0f, 0.0f);
+				}
+			});
+			continue;
 		}
-	});
 
-	// Batch any-hit query for shadow occlusion.
-	std::unique_ptr<bool[]> hit_flags(new bool[count]);
-	RayQuery query = RayQuery::any_hit(shadow_rays_.data(), count);
+		pool_->dispatch_and_wait(count, 256, [this, &ld, base, count](int start, int end) {
+			for (int i = start; i < end; i++) {
+				if (hits_[i].hit()) {
+					Vector3 origin = hits_[i].position + hits_[i].normal * SHADOW_BIAS;
+					Vector3 dir;
+					float max_dist;
+
+					if (ld.type == LightData::DIRECTIONAL) {
+						dir = ld.direction;
+						max_dist = DIR_LIGHT_MAX_DIST;
+					} else {
+						// Point or spot: direction is from hit point toward light position.
+						Vector3 to_light = ld.position - origin;
+						float dist = to_light.length();
+						if (dist < 1e-6f) {
+							shadow_rays_[base + i] = Ray(Vector3(0, 0, 0), Vector3(0, 1, 0), 0.0f, 0.0f);
+							continue;
+						}
+						dir = to_light / dist;
+						max_dist = dist;
+					}
+					shadow_rays_[base + i] = Ray(origin, dir, 0.0f, max_dist);
+				} else {
+					shadow_rays_[base + i] = Ray(Vector3(0, 0, 0), Vector3(0, 1, 0), 0.0f, 0.0f);
+				}
+			}
+		});
+	}
+
+	// Batch any-hit query for all lights at once.
+	shadow_hit_flags_.resize(total_shadow);
+	RayQuery query = RayQuery::any_hit(shadow_rays_.data(), total_shadow);
 	query.coherent = false; // Shadow rays are incoherent — divergent origins.
 	RayQueryResult result;
-	result.hit_flags = hit_flags.get();
+	result.hit_flags = reinterpret_cast<bool *>(shadow_hit_flags_.data());
 
 	svc->submit(query, result);
 
 	// Convert: hit_flags (true = occluded) → shadow_mask (0 = shadow, 1 = lit).
-	pool_->dispatch_and_wait(count, 1024, [this, &hit_flags](int start, int end) {
+	pool_->dispatch_and_wait(total_shadow, 1024, [this](int start, int end) {
 		for (int i = start; i < end; i++) {
-			shadow_mask_[i] = hit_flags[i] ? 0 : 1;
+			shadow_mask_[i] = shadow_hit_flags_[i] ? 0 : 1;
 		}
 	});
 }
 
-void RayRenderer::_shade_results(Camera3D *cam, DirectionalLight3D *light, WorldEnvironment *world_env) {
+void RayRenderer::_shade_results(Camera3D *cam, const SceneLightData &lights, WorldEnvironment *world_env) {
 	RT_ASSERT(!hits_.empty(), "Hits buffer must not be empty before shading");
 	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive for shading");
 
@@ -419,16 +564,20 @@ void RayRenderer::_shade_results(Camera3D *cam, DirectionalLight3D *light, World
 	// No clear needed — every shade function writes every pixel (hit or miss path).
 
 	// =========================================================================
-	// Godot-Native: read sun from DirectionalLight3D (per-frame scene read)
+	// Godot-Native: lights are already extracted in SceneLightData.
+	// For backward compatibility with shade_pass.h, we extract the first
+	// directional light's direction and color as sun_dir / sun_col.
+	// Additional lights (point, spot, extra directional) are passed via
+	// the SceneLightData struct for the multi-light shading loop.
 	// =========================================================================
 	Vector3 sun_dir = Vector3(0.0f, -1.0f, 0.0f);
 	Vector3 sun_col = Vector3(1.0f, 1.0f, 1.0f);
-	if (light) {
-		sun_dir = -light->get_global_transform().basis.get_column(2);
-		sun_dir = sun_dir.normalized();
-		Color lc = light->get_color();
-		float energy = light->get_param(Light3D::PARAM_ENERGY);
-		sun_col = Vector3(lc.r, lc.g, lc.b) * energy;
+	for (int i = 0; i < lights.light_count; i++) {
+		if (lights.lights[i].type == LightData::DIRECTIONAL) {
+			sun_dir = lights.lights[i].direction;
+			sun_col = lights.lights[i].color;
+			break;
+		}
 	}
 
 	// =========================================================================
@@ -526,16 +675,18 @@ void RayRenderer::_shade_results(Camera3D *cam, DirectionalLight3D *light, World
 	const Intersection *hits_ptr = hits_.data();
 
 	// Build shadow context from the pre-computed shadow mask.
+	// Multi-light layout: shadow_mask_[light_index * count + pixel_index].
 	ShadePass::ShadowContext shadows;
 	shadows.shadow_mask = shadow_mask_.data();
 	shadows.count = count;
+	shadows.light_count = lights.light_count;
 
 	pool_->dispatch_and_wait(count, 256, [&, ch, inv_depth_range, inv_pos_range,
 			sun_dir, sun_col, env_data, rays_ptr, hits_ptr, shadows](int start, int end) {
 		for (int i = start; i < end; i++) {
 			ShadePass::shade_channel(framebuffer_, i, hits_ptr[i], rays_ptr[i],
 				sun_dir, sun_col, inv_depth_range, inv_pos_range,
-				shade_data, shadows, env_data, ch);
+				shade_data, shadows, env_data, lights, ch);
 		}
 	});
 }

@@ -16,9 +16,13 @@
 7. [GPU Struct Rules](#gpu-struct-rules)
 8. [Module Decoupling](#module-decoupling)
 9. [Code Organization](#code-organization)
-10. [Error Handling](#error-handling)
-11. [Design Documentation](#design-documentation)
-12. [Build & Test](#build--test)
+10. [TinyBVH Third-Party Safety](#tinybvh-third-party-safety)
+11. [Correctness Over Cleverness](#correctness-over-cleverness)
+12. [Document Invariants](#document-invariants)
+13. [Error Handling](#error-handling)
+14. [Design Documentation](#design-documentation)
+15. [Demo Scene Convention](#demo-scene-convention)
+16. [Build & Test](#build--test)
 
 ---
 
@@ -495,6 +499,196 @@ Always document the CPU↔GPU sentinel mapping.
 
 ---
 
+## TinyBVH Third-Party Safety
+
+> **Never copy or move TinyBVH-containing types. Use `std::unique_ptr` in containers.**
+
+TinyBVH is a single-header BVH library (`thirdparty/tinybvh/tiny_bvh.h`). Its classes — `BVH`, `BVH4_CPU`, `BVH8_CPU`, `BVH8_CWBVH`, `MBVH<M>` — have **user-defined destructors** that call `AlignedFree` on internal node/triangle arrays. However, they have **no custom copy constructor, move constructor, copy-assignment, or move-assignment operators**.
+
+By the **C++ Rule of Five**, when a class defines a destructor, the compiler suppresses implicit move operations. This means:
+- `std::vector<MeshBLAS>` reallocation falls back to the implicit **copy constructor** (shallow pointer copy)
+- The old elements' destructors free the node arrays
+- The new copies hold **dangling pointers** → heap corruption on next access
+
+This is the root cause of the `0xC0000374` (STATUS_HEAP_CORRUPTION) crash we diagnosed and fixed.
+
+### The Rules
+
+1. **Any struct containing TinyBVH types must be non-copyable AND non-movable:**
+   ```cpp
+   struct MeshBLAS {
+       MeshBLAS() = default;
+       MeshBLAS(const MeshBLAS &) = delete;
+       MeshBLAS &operator=(const MeshBLAS &) = delete;
+       MeshBLAS(MeshBLAS &&) = delete;
+       MeshBLAS &operator=(MeshBLAS &&) = delete;
+       tinybvh::BVH bvh2;
+       // ...
+   };
+   ```
+
+2. **Store such structs via `std::unique_ptr` in vectors** — reallocation moves only the pointer, never the object:
+   ```cpp
+   std::vector<std::unique_ptr<MeshBLAS>> blas_meshes_;  // ✅ safe
+   blas_meshes_.push_back(std::make_unique<MeshBLAS>());  // object never moves
+   ```
+
+3. **Never use `std::vector<T>` where T contains TinyBVH** — even with `reserve()`. Reserve is a runtime band-aid, not a compile-time guarantee:
+   ```cpp
+   std::vector<MeshBLAS> meshes;  // ❌ reallocation shallow-copies, double-free
+   meshes.reserve(n);              // ❌ still not safe if you forget or miscalculate
+   ```
+
+4. **Never assign TinyBVH objects** — `bvh = BVH{}` does a shallow copy that overwrites the valid pointers with nulls, leaking the old allocation:
+   ```cpp
+   bvh2 = tinybvh::BVH{};    // ❌ memory leak (and potential double-free)
+   ```
+
+5. **TinyBVH `Build()`/`PrepareBuild()` manage memory internally** — they check `allocatedNodes`, free if needed, and reallocate. It is safe to rebuild in-place without clearing.
+
+### Affected Types in This Project
+
+| Type | Contains TinyBVH | Protection |
+|------|------------------|------------|
+| `MeshBLAS` | `BVH`, `BVH4_CPU`, `BVH8_CPU` | Non-copyable, stored as `unique_ptr` in `SceneTLAS` |
+| `RayScene` | `BVH`, `BVH4_CPU`, `BVH8_CPU`, `BVH8_CWBVH` | Non-copyable, owned by `RayDispatcher` |
+| `SceneTLAS` | `BVH` (tlas_bvh_) | Non-copyable, owned by `RayTracerServer` |
+
+### WHY NOT just `reserve()`?
+
+We previously used `reserve_meshes()` to pre-allocate the vector before building. This technically worked, but:
+- It required a two-pass pattern (count → reserve → build) in every caller
+- If any caller forgot or miscounted, silent heap corruption resulted
+- The bug was invisible until a later allocation exposed it (e.g., CWBVH build)
+
+`std::unique_ptr` provides a **compile-time guarantee** — the `MeshBLAS` objects live on the heap and never move, regardless of vector operations.
+
+---
+
+## Correctness Over Cleverness
+
+> **Always use the textbook-correct pattern. Never rely on timing, platform scheduling, or "it works in practice" arguments.**
+
+This is a multi-threaded real-time system. Subtle incorrectness causes intermittent freezes, data corruption, and bugs that are nearly impossible to reproduce under a debugger. When cppreference or the C++ standard documents a required usage pattern, follow it exactly — even if a shortcut appears to work on your machine.
+
+### The Rules
+
+1. **Condition variables require mutex-guarded predicates.** The predicate variable must be written while holding the same mutex the waiter holds. An atomic store without the mutex causes lost notifications — the classic CV race. See the `dispatch_and_wait` / `_worker_loop` pattern in `thread_pool.h` for the correct implementation.
+
+2. **RAII for all resource ownership.** Threads, GPU buffers, file handles — wrap them in an owning type with a destructor. Never rely on manual cleanup sequences.
+
+3. **No data races, even benign ones.** Two threads accessing the same non-atomic variable where at least one writes is undefined behavior. "It works on x86" is not a justification — the compiler may reorder or elide the access.
+
+4. **Lock ordering must be documented and consistent.** If code acquires multiple mutexes, always acquire in the same order. Document the order in the mutex declaration comment.
+
+5. **Prefer compile-time guarantees over runtime checks.** `= delete` over "don't call this". `unique_ptr` over "remember to reserve". `static_assert` over comments that say "must be 32 bytes".
+
+6. **No timing-dependent correctness.** Code must not assume thread scheduling order, sleep durations, or that "the worker will finish before we check". If correctness depends on timing, it's a race condition.
+
+### Examples
+
+```cpp
+// ❌ BAD — atomic store without lock, CV notification can be lost
+if (pending_.fetch_sub(1) == 1) {   // no lock held
+    cv_done_.notify_one();            // may arrive before waiter sleeps
+}
+
+// ✅ GOOD — predicate mutation under the same lock the waiter holds
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_--;
+    if (pending_ == 0) {
+        cv_done_.notify_one();
+    }
+}
+```
+
+```cpp
+// ❌ BAD — relies on timing assumption
+workers_done_.store(true);  // "workers always finish within 1ms"
+std::this_thread::sleep_for(std::chrono::milliseconds(2));
+// use results...
+
+// ✅ GOOD — explicit synchronization
+{
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_done_.wait(lock, [this] { return pending_ == 0; });
+}
+// use results...
+```
+
+### WHY NOT "it works on my machine"?
+
+Atomics without mutex protection technically avoid data races (no UB), but they create **liveness bugs** — forever-blocked waits that freeze the application. These bugs are:
+- **Intermittent**: require a ~nanosecond scheduling window that hits once every few seconds
+- **Unreproducible under debugger**: debugger serializes threads, hiding the race
+- **Platform-dependent**: different OS schedulers trigger different interleavings
+- **Invisible to sanitizers**: no UB, no data race — just a lost CV notification
+
+The 30-second ThreadPool freeze diagnosed in this project was exactly this class of bug.
+
+---
+
+## Document Invariants
+
+> **Every synchronization primitive, ownership boundary, and lifetime contract must have an inline comment documenting its invariant.**
+
+Code review cannot catch concurrency bugs if the reviewer doesn't know what each mutex protects. Lifetime bugs are invisible if ownership isn't stated. This rule makes implicit contracts explicit.
+
+### The Rules
+
+1. **Every mutex declaration states what it protects:**
+   ```cpp
+   std::mutex mutex_;  // Protects: work_func_, work_chunk_size_, work_total_,
+                       //           pending_, work_generation_, shutdown_.
+                       // Lock ordering: always acquired before cv_work_ / cv_done_ waits.
+   ```
+
+2. **Every condition_variable states its predicate and which mutex guards it:**
+   ```cpp
+   std::condition_variable cv_done_;  // Predicate: pending_ == 0.
+                                      // Guarded by: mutex_.
+                                      // Notified by: last worker to complete a chunk.
+   ```
+
+3. **Every atomic states WHY it doesn't need a mutex:**
+   ```cpp
+   std::atomic<uint32_t> work_next_chunk_{0};  // Lock-free chunk counter.
+                                                // Not connected to any CV predicate —
+                                                // safe to use without mutex_.
+   ```
+
+4. **Every `unique_ptr`, `Ref<>`, or raw pointer states who owns the pointee and when it's valid:**
+   ```cpp
+   std::unique_ptr<IThreadDispatch> pool_;  // Owned. Created in constructor, destroyed in destructor.
+                                             // Valid for the entire lifetime of RayRenderer.
+   ```
+
+5. **Thread-safety of public methods is documented in the class docblock:**
+   ```cpp
+   // ThreadPool — NOT thread-safe for concurrent dispatch_and_wait calls.
+   // Only ONE thread may call dispatch_and_wait at a time (the Godot main thread).
+   // Worker threads are internal and never call public methods.
+   ```
+
+6. **Struct/class-level lifetime annotations for non-obvious validity windows:**
+   ```cpp
+   // SceneShadeData — valid only between get_shade_data() and the next build() call.
+   // The caller must not store this across frames.
+   ```
+
+### Checklist
+
+Before submitting any code with concurrency or ownership:
+
+- [ ] Every `std::mutex` has a comment listing what it protects
+- [ ] Every `std::condition_variable` has its predicate and guard documented
+- [ ] Every `std::atomic` explains why it doesn't need a mutex
+- [ ] Every owning pointer (`unique_ptr`, `Ref<>`) states lifetime
+- [ ] Class docblock states thread-safety guarantees
+
+---
+
 ## Error Handling
 
 ### Prefer Assertions Over Exceptions
@@ -604,6 +798,120 @@ clang-format -i src/**/*.h src/**/*.cpp
 
 ---
 
+## Demo Scene Convention
+
+> **Every feature gets a focused demo scene. Demo scenes use imported assets, the modular UI system, and a consistent structure.**
+
+Demo scenes live in `project/demos/` and serve two purposes: (1) regression-test features visually, (2) document usage for users and AI assistants. They are the project's integration tests.
+
+### The Rules
+
+1. **One scene per feature family.** Each demo targets a specific feature: `normal_map_demo`, `lighting_demo`, `pbr_demo`, `panorama_demo`. This keeps scenes focused and makes it easy to isolate regressions.
+
+2. **Imported assets over inline resources.** Meshes come from `.obj`/`.glb` files in `project/assets/`. Textures (albedo, normal, roughness maps) are real image files, not Godot sub_resources. This is how real users work — they import models, not hand-edit `.tscn` XML.
+
+3. **Asset generation is reproducible.** Procedural assets (test spheres, tiling normal maps, gradient panoramas) are generated by `tools/generate_demo_assets.py`. Run it once to populate `project/assets/`. Generated files are committed to the repo so cloning works immediately.
+
+4. **Consistent scene tree structure.** Every demo scene follows this layout:
+
+   ```
+   FeatureDemo (Node3D, script = feature_demo.gd)
+   ├── Camera3D             (FPS camera, fov 65-75)
+   ├── RayRenderer          (camera_path = ../Camera3D)
+   ├── DirectionalLight3D   (sun — read by raytracer per frame)
+   ├── WorldEnvironment     (sky, ambient, tone mapping)
+   ├── Display (CanvasLayer)
+   │   ├── %RenderView (TextureRect, stretch_mode=5, texture_filter=1)
+   │   └── %HUD (Label, yellow, font_size 16)
+   └── ... geometry (MeshInstance3D nodes)
+   ```
+
+   Add `OmniLight3D` / `SpotLight3D` only in scenes that specifically test them.
+
+5. **Use the modular UI system.** All demos instantiate `base_menu.tscn` + the appropriate panels (`renderer_panel`, `debug_panel`, `layer_panel`). Never build UI from scratch.
+
+6. **GDScript file header.** Every `.gd` file starts with a structured comment:
+
+   ```gdscript
+   # feature_demo.gd — One-line summary.
+   #
+   # WHAT:  What this demo showcases (1-2 sentences).
+   # WHY:   Why it exists / what feature it validates.
+   #
+   # SCENE LAYOUT:
+   #   Node3D (this script)
+   #   ├── Camera3D
+   #   ├── RayRenderer
+   #   └── ... (geometry)
+   #
+   # CONTROLS:
+   #   WASD / Arrow keys — Move camera
+   #   ... (all keybindings)
+   ```
+
+7. **Standard controls.** Every demo supports this baseline (via the existing FPS camera pattern):
+
+   | Key | Action |
+   |-----|--------|
+   | WASD | Move camera |
+   | Mouse | Look around |
+   | Q / E | Down / Up |
+   | TAB | Cycle render channel |
+   | R | Render frame |
+   | B | Cycle backend |
+   | F | Toggle auto-render |
+   | +/- | Change resolution |
+   | L | Toggle shadows |
+   | J | Toggle anti-aliasing |
+   | H | Toggle render view |
+   | ESC / P | Settings menu |
+   | F1 | Toggle help overlay |
+
+   Feature-specific keys are added per demo and documented in the tooltip.
+
+8. **Mesh registration in `_ready()`.** Walk the scene tree with `_find_all_meshes()`, register each with `RayTracerServer.register_mesh()`, then call `RayTracerServer.build()`.
+
+9. **Print a load summary.** `_ready()` prints registered mesh/triangle count and available controls:
+   ```
+   [NormalMapDemo] Registered 5 meshes, 2340 triangles
+   ```
+
+### File Naming
+
+| File | Convention | Example |
+|------|-----------|----------|
+| Scene | `feature_demo.tscn` | `normal_map_demo.tscn` |
+| Script | `feature_demo.gd` | `normal_map_demo.gd` |
+| Root node name | `PascalCase` + `Demo` | `NormalMapDemo` |
+| Assets | `project/assets/<category>/` | `project/assets/textures/brick_normal.png` |
+
+### Asset Directory
+
+```
+project/
+  assets/
+    meshes/         # .obj / .glb imported 3D models
+    textures/       # .png / .jpg / .exr texture maps
+    environments/   # .hdr / .exr panorama sky images
+  demos/
+    feature_demo.gd
+    feature_demo.tscn
+    ui/             # Modular menu system (shared)
+```
+
+### Checklist for New Demos
+
+- [ ] `.tscn` + `.gd` pair in `project/demos/`
+- [ ] Meshes from imported files in `project/assets/`, not inline sub_resources
+- [ ] Scene tree follows the standard layout (Camera3D, RayRenderer, lights, WorldEnvironment)
+- [ ] Uses modular UI (base_menu + panels)
+- [ ] GDScript header with WHAT/WHY/SCENE LAYOUT/CONTROLS
+- [ ] Standard controls + feature-specific keys documented in tooltip
+- [ ] Print summary in `_ready()`
+- [ ] Tested: loads without errors, renders correctly, no stalls
+
+---
+
 ## Build & Test
 
 ### Build System
@@ -613,6 +921,19 @@ SCons with godot-cpp. The canonical build command:
 ```bash
 scons platform=windows target=template_debug
 ```
+
+### Running the Game (for testing)
+
+Run the demo scene directly from terminal without the editor UI:
+
+```bash
+& "<godot-executable-path>" --path "project" --rendering-method forward_plus
+```
+
+This launches the project in `project/` with the Vulkan Forward+ renderer.
+To capture output, redirect stdout/stderr to files. `stderr` is typically
+empty on Windows (Godot routes to stdout). Use `Start-Process -RedirectStandardOutput`
+in PowerShell for background testing with a timeout.
 
 ### Directory Structure
 
@@ -653,6 +974,9 @@ Before submitting code (or before an AI considers a change complete):
 - [ ] GPU structs have `static_assert` and GLSL mirror comments
 - [ ] Modules only include `api/` and `core/` — never server internals
 - [ ] Resource-owning classes are non-copyable
+- [ ] TinyBVH-containing types use `unique_ptr` in containers (see [TinyBVH Safety](#tinybvh-third-party-safety))
+- [ ] Synchronization uses textbook patterns — no timing-dependent correctness (see [Correctness Over Cleverness](#correctness-over-cleverness))
+- [ ] Every mutex, CV, atomic, and owning pointer has an invariant comment (see [Document Invariants](#document-invariants))
 - [ ] Design decisions document "WHY NOT X?"
 - [ ] No exceptions — assertions + return values only
 - [ ] Numbers and measurements cited where relevant

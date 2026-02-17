@@ -26,6 +26,7 @@
 //   This avoids any synchronization during traversal.
 
 #include "accel/ray_scene.h"
+#include "accel/scene_tlas.h"
 #include "gpu/gpu_ray_caster.h"
 #include "core/stats.h"
 #include "core/asserts.h"
@@ -50,18 +51,31 @@ public:
 	const RayScene &scene() const { return scene_; }
 
 	// ========================================================================
+	// TLAS — set by server for CPU two-level traversal (Phase 2)
+	// ========================================================================
+
+	void set_tlas(SceneTLAS *tlas) { tlas_ = tlas; }
+	const SceneTLAS *get_tlas() const { return tlas_; }
+	bool has_tlas() const { return tlas_ != nullptr && tlas_->is_built(); }
+
+	// ========================================================================
 	// Build — construct BVH + optionally upload to GPU
 	// ========================================================================
 
 	// Build acceleration structure from populated triangles.
 	// If GPU backend is active, also uploads scene data to GPU.
 	void build() {
+		RT_ASSERT(scene_.triangle_count() >= 0, "build: invalid triangle count");
 		scene_.build();
+		RT_ASSERT(scene_.built || scene_.triangles.empty(), "build: build did not complete");
 
 		// Upload to GPU if the pipeline is initialized (not is_available(),
 		// which also requires scene_uploaded_ — chicken-and-egg on first build).
 		if (_should_use_gpu() && gpu_caster_.is_initialized()) {
-			gpu_caster_.upload_scene(scene_.triangles, scene_.bvh);
+			gpu_caster_.upload_scene(scene_.triangles, scene_.bvh2);
+			// CWBVH gives ~1.5-2× GPU speedup via 8-wide compressed BVH traversal.
+			// upload_cwbvh() is a no-op if the CWBVH shader didn't compile.
+			gpu_caster_.upload_cwbvh(scene_.cwbvh);
 		}
 	}
 
@@ -84,8 +98,11 @@ public:
 
 	// Upload current scene to GPU. Call after build() if GPU wasn't ready during build.
 	void upload_to_gpu() {
-		if (gpu_caster_.is_initialized() && scene_.bvh.is_built()) {
-			gpu_caster_.upload_scene(scene_.triangles, scene_.bvh);
+		RT_ASSERT(scene_.triangle_count() >= 0, "upload_to_gpu: invalid triangle count");
+		if (gpu_caster_.is_initialized() && scene_.built) {
+			RT_ASSERT(!scene_.triangles.empty(), "upload_to_gpu: built scene has no triangles");
+			gpu_caster_.upload_scene(scene_.triangles, scene_.bvh2);
+			gpu_caster_.upload_cwbvh(scene_.cwbvh);
 		}
 	}
 
@@ -134,10 +151,12 @@ public:
 		}
 
 		if (!stats) {
-			// No stats — parallel dispatch with packet traversal per chunk.
+			// No stats — parallel dispatch per chunk.
+			// CPU routes through TLAS (two-level, BVH4/BVH8 per BLAS) when available,
+			// falls back to flat RayScene otherwise.
 			pool_.dispatch_and_wait(count, MIN_BATCH_FOR_THREADING,
 					[&](int start, int end) {
-						scene_.cast_rays_packet(&rays[start], &results[start],
+						_cpu_cast_rays(&rays[start], &results[start],
 								end - start, nullptr, query_mask);
 					});
 		} else {
@@ -151,7 +170,7 @@ public:
 						uint32_t slot = slot_counter.fetch_add(1,
 								std::memory_order_relaxed);
 						RayStats &local = chunk_stats[slot];
-						scene_.cast_rays_packet(&rays[start], &results[start],
+						_cpu_cast_rays(&rays[start], &results[start],
 								end - start, &local, query_mask);
 					});
 
@@ -198,9 +217,8 @@ public:
 		if (!stats) {
 			pool_.dispatch_and_wait(count, MIN_BATCH_FOR_THREADING,
 					[&](int start, int end) {
-						for (int i = start; i < end; i++) {
-							hit_results[i] = scene_.any_hit(rays[i], nullptr, query_mask);
-						}
+						_cpu_any_hit_rays(&rays[start], &hit_results[start],
+								end - start, nullptr, query_mask);
 					});
 		} else {
 			uint32_t num_slots = pool_.thread_count() + 1;
@@ -212,9 +230,8 @@ public:
 						uint32_t slot = slot_counter.fetch_add(1,
 								std::memory_order_relaxed);
 						RayStats &local = chunk_stats[slot];
-						for (int i = start; i < end; i++) {
-							hit_results[i] = scene_.any_hit(rays[i], &local, query_mask);
-						}
+						_cpu_any_hit_rays(&rays[start], &hit_results[start],
+								end - start, &local, query_mask);
 					});
 
 			for (const auto &cs : chunk_stats) {
@@ -235,6 +252,9 @@ public:
 			gpu_caster_.cast_rays(&ray, &result, 1, query_mask);
 			return result;
 		}
+		if (has_tlas()) {
+			return tlas_->cast_ray(ray, stats);
+		}
 		return scene_.cast_ray(ray, stats, query_mask);
 	}
 
@@ -245,6 +265,9 @@ public:
 			bool result;
 			gpu_caster_.cast_rays_any_hit(&ray, &result, 1, query_mask);
 			return result;
+		}
+		if (has_tlas()) {
+			return tlas_->any_hit(ray, stats);
 		}
 		return scene_.any_hit(ray, stats, query_mask);
 	}
@@ -288,9 +311,9 @@ public:
 		RT_ASSERT(count >= 0, "collect_gpu_nearest: count must be non-negative");
 		RT_ASSERT_NOT_NULL(results);
 		if (async_sorted_ && !async_perm_.empty()) {
-			std::vector<Intersection> sorted_results(count);
-			gpu_caster_.collect_nearest(sorted_results.data(), count);
-			unshuffle_intersections(sorted_results.data(), async_perm_, results);
+			async_sorted_results_.resize(count);
+			gpu_caster_.collect_nearest(async_sorted_results_.data(), count);
+			unshuffle_intersections(async_sorted_results_.data(), async_perm_, results);
 			async_sorted_ = false;
 		} else {
 			gpu_caster_.collect_nearest(results, count);
@@ -321,10 +344,9 @@ public:
 		RT_ASSERT(count >= 0, "collect_gpu_any_hit: count must be non-negative");
 		RT_ASSERT_NOT_NULL(hit_results);
 		if (async_sorted_ && !async_perm_.empty()) {
-			bool *sorted_buf = new bool[count];
-			gpu_caster_.collect_any_hit(sorted_buf, count);
-			unshuffle_bools(sorted_buf, async_perm_, hit_results);
-			delete[] sorted_buf;
+			async_any_hit_buf_.resize(count);
+			gpu_caster_.collect_any_hit(reinterpret_cast<bool *>(async_any_hit_buf_.data()), count);
+			unshuffle_bools(reinterpret_cast<bool *>(async_any_hit_buf_.data()), async_perm_, hit_results);
 			async_sorted_ = false;
 		} else {
 			gpu_caster_.collect_any_hit(hit_results, count);
@@ -340,18 +362,33 @@ public:
 	int triangle_count() const { return scene_.triangle_count(); }
 
 	int bvh_node_count() const {
-		return static_cast<int>(scene_.bvh.get_node_count());
+		if (has_tlas()) {
+			int count = static_cast<int>(tlas_->tlas_bvh().NodeCount());
+			RT_ASSERT(count >= 0, "bvh_node_count: TLAS node count overflow");
+			return count;
+		}
+		int count = scene_.built ? static_cast<int>(scene_.bvh2.NodeCount()) : 0;
+		RT_ASSERT(count >= 0, "bvh_node_count: node count overflow");
+		return count;
 	}
 
 	int bvh_depth() const {
-		return static_cast<int>(scene_.bvh.get_depth());
+		// TinyBVH doesn't expose tree depth directly. Approximate as log2(nodes).
+		int nodes = bvh_node_count();
+		RT_ASSERT(nodes >= 0, "bvh_depth: node count must be non-negative");
+		if (nodes <= 0) { return 0; }
+		int depth = 0;
+		while ((1 << depth) < nodes) { depth++; }
+		RT_ASSERT(depth >= 0 && depth < 64, "bvh_depth: depth out of reasonable range");
+		return depth;
 	}
 
 	// Number of worker threads in the thread pool (excludes main thread).
 	uint32_t thread_count() const { return pool_.thread_count(); }
 
 private:
-	RayScene scene_;
+	RayScene scene_;            // Flat scene for GPU staging (world-space triangles + BVH2)
+	SceneTLAS *tlas_ = nullptr; // Two-level BVH for CPU path (set by server)
 	GPURayCaster gpu_caster_;
 	ThreadPool pool_;            // Persistent worker threads for CPU dispatch
 	Backend backend_ = Backend::CPU;
@@ -366,6 +403,8 @@ private:
 	// Async dispatch state (reused to avoid per-frame allocation)
 	std::vector<uint32_t> async_perm_;
 	std::vector<Ray> async_sorted_rays_;
+	std::vector<Intersection> async_sorted_results_;
+	std::vector<uint8_t> async_any_hit_buf_;
 	bool async_sorted_ = false;
 
 	// Don't bother threading for tiny batches — the synchronization overhead
@@ -378,11 +417,38 @@ private:
 	static constexpr int MIN_BATCH_FOR_SORTING = 256;
 
 	bool _should_use_gpu() const {
+		RT_ASSERT(backend_ == Backend::CPU || backend_ == Backend::GPU || backend_ == Backend::AUTO,
+			"_should_use_gpu: invalid backend enum value");
 		switch (backend_) {
 			case Backend::GPU:  return true;
 			case Backend::AUTO: return gpu_caster_.is_available();
 			case Backend::CPU:  return false;
 		}
+		RT_UNREACHABLE("_should_use_gpu: unhandled backend case");
 		return false;
+	}
+
+	// Internal CPU dispatch helpers — route through TLAS (two-level, instance-aware)
+	// when available, fall back to flat RayScene otherwise.
+	void _cpu_cast_rays(const Ray *rays, Intersection *results, int count,
+			RayStats *stats, uint32_t query_mask) const {
+		RT_ASSERT_NOT_NULL(rays);
+		RT_ASSERT_NOT_NULL(results);
+		if (has_tlas()) {
+			tlas_->cast_rays(rays, results, count, stats);
+		} else {
+			scene_.cast_rays(rays, results, count, stats, query_mask);
+		}
+	}
+
+	void _cpu_any_hit_rays(const Ray *rays, bool *hit_results, int count,
+			RayStats *stats, uint32_t query_mask) const {
+		RT_ASSERT_NOT_NULL(rays);
+		RT_ASSERT_NOT_NULL(hit_results);
+		if (has_tlas()) {
+			tlas_->any_hit_rays(rays, hit_results, count, stats);
+		} else {
+			scene_.any_hit_rays(rays, hit_results, count, stats, query_mask);
+		}
 	}
 };

@@ -29,9 +29,10 @@
 #include "api/ray_query.h"
 #include "api/scene_shade_data.h"
 #include "core/stats.h"
-#include "core/material_data.h"
+#include "api/material_data.h"
 #include "core/triangle_uv.h"
 #include "core/triangle_normals.h"
+#include "core/triangle_tangents.h"
 
 #include <vector>
 #include <cstdint>
@@ -61,6 +62,7 @@ private:
 		std::vector<uint32_t> object_material_ids;    // Per-triangle material index (into object_materials)
 		std::vector<TriangleUV> object_triangle_uvs;  // Per-triangle UV coordinates
 		std::vector<TriangleNormals> object_triangle_normals; // Per-vertex smooth normals
+		std::vector<TriangleTangents> object_triangle_tangents; // Per-vertex tangents (for normal mapping)
 		uint32_t layer_mask = 0xFFFFFFFF;      // Godot VisualInstance3D.layers bitmask
 		bool valid = false;
 	};
@@ -76,6 +78,7 @@ private:
 	std::vector<uint32_t> scene_material_ids_;
 	std::vector<TriangleUV> scene_triangle_uvs_;
 	std::vector<TriangleNormals> scene_triangle_normals_;
+	std::vector<TriangleTangents> scene_triangle_tangents_;
 
 	// ---- Backend ----
 	BackendMode backend_mode_ = BACKEND_CPU;
@@ -95,7 +98,8 @@ private:
 		std::vector<MaterialData> &out_materials,
 		std::vector<uint32_t> &out_material_ids,
 		std::vector<TriangleUV> &out_uvs,
-		std::vector<TriangleNormals> &out_normals);
+		std::vector<TriangleNormals> &out_normals,
+		std::vector<TriangleTangents> &out_tangents);
 	void _rebuild_scene();
 
 protected:

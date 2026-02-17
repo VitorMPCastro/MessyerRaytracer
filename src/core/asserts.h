@@ -52,6 +52,7 @@
 			"[%s FAILED] %s | File: %s | Line: %d | Condition: %s", \
 			(tag), (message), __FILE__, __LINE__, #condition); \
 		ERR_PRINT(_rt_buf); \
+		::godot::_err_flush_stdout(); \
 		GENERATE_TRAP(); \
 	} while (0)
 
@@ -129,5 +130,6 @@
 			"[RT_UNREACHABLE] %s | File: %s | Line: %d", \
 			(message), __FILE__, __LINE__); \
 		ERR_PRINT(_rt_buf); \
+		::godot::_err_flush_stdout(); \
 		GENERATE_TRAP(); \
 	} while (0)

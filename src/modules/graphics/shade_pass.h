@@ -25,9 +25,11 @@
 #include "core/ray.h"
 #include "core/triangle_uv.h"
 #include "core/triangle_normals.h"
+#include "core/triangle_tangents.h"
 #include "modules/graphics/ray_image.h"
 #include "modules/graphics/texture_sampler.h"
 #include "api/scene_shade_data.h"
+#include "api/light_data.h"
 
 #include "core/asserts.h"
 
@@ -89,6 +91,74 @@ inline Vector3 get_smooth_normal(const Intersection &hit,
 		return shade_data.triangle_normals[hit.prim_id].interpolate(hit.u, hit.v);
 	}
 	return hit.normal;
+}
+
+// ========================================================================
+// Normal map perturbation (Phase 1 — Normal Map Support)
+// ========================================================================
+// Constructs the TBN (Tangent-Bitangent-Normal) matrix from per-vertex tangent
+// data, samples the normal map texture, and transforms the tangent-space normal
+// to world space.  The result replaces the smooth vertex normal for shading.
+//
+// Convention: OpenGL normal maps (R=+X, G=+Y, B=+Z).  A flat normal map
+// sample is (0.5, 0.5, 1.0) which maps to tangent-space (0, 0, 1) after
+// the [0,1]→[-1,1] rescale.
+//
+// normal_scale controls perturbation strength: 0 = use smooth normal as-is,
+// 1.0 = full perturbation.  Values > 1 exaggerate the effect.
+
+inline Vector3 perturb_normal(const Vector3 &smooth_normal,
+		const Intersection &hit,
+		const SceneShadeData &shade_data,
+		const MaterialData &mat) {
+	RT_ASSERT(smooth_normal.is_finite(), "perturb_normal: smooth_normal must be finite");
+	RT_ASSERT(mat.has_normal_texture, "perturb_normal: must only be called when normal texture exists");
+
+	// Check that tangent data is available for this triangle.
+	if (!shade_data.triangle_tangents ||
+			hit.prim_id >= static_cast<uint32_t>(shade_data.triangle_count)) {
+		return smooth_normal;
+	}
+
+	const TriangleTangents &tri_t = shade_data.triangle_tangents[hit.prim_id];
+	if (!tri_t.has_tangents()) { return smooth_normal; }
+
+	// Interpolate tangent and bitangent sign at hit point.
+	Vector3 T = tri_t.interpolate_tangent(hit.u, hit.v);
+	float bsign = tri_t.interpolate_sign(hit.u, hit.v);
+
+	// Re-orthogonalize tangent with respect to the smooth normal (Gram-Schmidt).
+	// This ensures the TBN matrix is orthonormal even if tangent data drifted
+	// due to mesh deformation or interpolation.
+	Vector3 N = smooth_normal;
+	T = (T - N * N.dot(T)).normalized();
+	Vector3 B = N.cross(T) * bsign;
+
+	// Sample the normal map texture at the hit UV.
+	if (!shade_data.triangle_uvs ||
+			hit.prim_id >= static_cast<uint32_t>(shade_data.triangle_count)) {
+		return smooth_normal;
+	}
+	const TriangleUV &tri_uv = shade_data.triangle_uvs[hit.prim_id];
+	Vector2 uv = tri_uv.interpolate(hit.u, hit.v);
+	Color nm_sample = TextureSampler::sample_bilinear(
+			mat.normal_texture.ptr(), uv.x, uv.y);
+
+	// Decode from [0,1] to [-1,1] tangent-space normal.
+	float ts_x = nm_sample.r * 2.0f - 1.0f;
+	float ts_y = nm_sample.g * 2.0f - 1.0f;
+	float ts_z = nm_sample.b * 2.0f - 1.0f;
+
+	// Apply normal_scale to the X/Y components (Z stays as-is to preserve normalization target).
+	ts_x *= mat.normal_scale;
+	ts_y *= mat.normal_scale;
+
+	// Transform from tangent space to world space via TBN matrix.
+	// world_normal = T * ts_x + B * ts_y + N * ts_z
+	Vector3 perturbed = T * ts_x + B * ts_y + N * ts_z;
+	float len_sq = perturbed.length_squared();
+	if (len_sq < 1e-8f) { return smooth_normal; }
+	return perturbed / std::sqrt(len_sq);
 }
 
 // ========================================================================
@@ -172,6 +242,8 @@ inline void direction_to_equirect_uv(const Vector3 &dir, float &u, float &v) {
 
 inline void sky_color(const Vector3 &dir, const EnvironmentData &env,
 		float &r, float &g, float &b) {
+	RT_ASSERT(dir.is_finite(), "sky_color: direction must be finite");
+	RT_ASSERT(env.tonemap_mode >= 0 && env.tonemap_mode <= 4, "sky_color: invalid tonemap mode");
 	// Phase 1.4: if an HDR panorama is available, sample it instead.
 	if (env.panorama_data) {
 		float u, v;
@@ -209,6 +281,8 @@ inline void sky_color(const Vector3 &dir, const EnvironmentData &env,
 /// GGX / Trowbridge-Reitz normal distribution function.
 ///   D(h) = alpha^2 / (pi * ((n·h)^2 * (alpha^2 - 1) + 1)^2)
 inline float distribution_ggx(float n_dot_h, float roughness) {
+	RT_ASSERT_FINITE(n_dot_h);
+	RT_ASSERT(roughness >= 0.0f && roughness <= 1.0f, "distribution_ggx: roughness must be in [0,1]");
 	float a = roughness * roughness;
 	float a2 = a * a;
 	float denom = n_dot_h * n_dot_h * (a2 - 1.0f) + 1.0f;
@@ -226,6 +300,8 @@ inline float fresnel_schlick(float cos_theta, float f0) {
 /// Smith's geometry function (GGX height-correlated).
 ///   G1(v) = 2 * n·v / (n·v + sqrt(alpha^2 + (1 - alpha^2) * (n·v)^2))
 inline float geometry_smith_ggx(float n_dot_v, float n_dot_l, float roughness) {
+	RT_ASSERT_FINITE(n_dot_v);
+	RT_ASSERT(roughness >= 0.0f && roughness <= 1.0f, "geometry_smith_ggx: roughness must be in [0,1]");
 	float a = roughness * roughness;
 	float a2 = a * a;
 	auto g1 = [a2](float ndx) -> float {
@@ -235,18 +311,22 @@ inline float geometry_smith_ggx(float n_dot_v, float n_dot_l, float roughness) {
 }
 
 // ========================================================================
-// Shadow context — carries per-pixel shadow results
+// Shadow context — carries per-pixel, per-light shadow results
 // ========================================================================
 // The shadow_mask array is populated by the renderer before shade_pass runs.
+// Layout: shadow_mask[light_index * count + pixel_index].
 // 0 = in shadow, 1 = lit.  If null, all pixels are treated as lit.
 
 struct ShadowContext {
 	const uint8_t *shadow_mask = nullptr;
-	int count = 0;
+	int count = 0;       // Number of pixels per light
+	int light_count = 0; // Number of lights
 
-	bool is_lit(int idx) const {
+	/// Check if pixel idx is lit by light li.
+	bool is_lit(int idx, int li = 0) const {
 		if (!shadow_mask) { return true; }
-		return shadow_mask[idx] != 0;
+		if (li < 0 || li >= light_count) { return true; }
+		return shadow_mask[li * count + idx] != 0;
 	}
 };
 
@@ -263,6 +343,19 @@ inline void shade_normal(RayImage &fb, int idx, const Intersection &hit,
 		return;
 	}
 	Vector3 n = get_smooth_normal(hit, shade_data);
+
+	// Apply normal map perturbation if available (matches shade_material behavior).
+	if (shade_data.material_ids &&
+			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
+		uint32_t nmap_mat_id = shade_data.material_ids[hit.prim_id];
+		if (nmap_mat_id < static_cast<uint32_t>(shade_data.material_count)) {
+			const MaterialData &nmap_mat = shade_data.materials[nmap_mat_id];
+			if (nmap_mat.has_normal_texture) {
+				n = perturb_normal(n, hit, shade_data, nmap_mat);
+			}
+		}
+	}
+
 	float r = n.x * 0.5f + 0.5f;
 	float g = n.y * 0.5f + 0.5f;
 	float b = n.z * 0.5f + 0.5f;
@@ -275,6 +368,8 @@ inline void shade_normal(RayImage &fb, int idx, const Intersection &hit,
 
 inline void shade_depth(RayImage &fb, int idx, const Intersection &hit,
 		float inv_depth_range) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT_FINITE(inv_depth_range);
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::DEPTH, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -289,6 +384,8 @@ inline void shade_depth(RayImage &fb, int idx, const Intersection &hit,
 // ========================================================================
 
 inline void shade_barycentric(RayImage &fb, int idx, const Intersection &hit) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(fb.pixel_count() > 0, "Framebuffer must have at least one pixel");
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::BARYCENTRIC, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -325,10 +422,12 @@ inline float tonemap_aces(float c) {
 
 /// AgX base contrast curve (simplified S-curve approximation).
 inline float tonemap_agx(float c) {
+	RT_ASSERT_FINITE(c);
 	// Attempt at AgX tone-mapping; a power-based sigmoid.
 	float x = std::max(c, 0.0f);
 	float x2 = x * x;
 	float mapped = x2 / (x2 + 0.09f * x + 0.0009f);
+	RT_ASSERT(mapped >= 0.0f && mapped <= 1.0f + 1e-6f, "tonemap_agx: output out of [0,1] range");
 	return (mapped > 1.0f) ? 1.0f : mapped;
 }
 
@@ -348,13 +447,41 @@ inline void tonemap_rgb(float &r, float &g, float &b, int mode) {
 }
 
 // ========================================================================
-// PBR material shading — Cook-Torrance + shadow + sky
+// Light attenuation helpers (Godot-matching)
+// ========================================================================
+
+/// Godot's distance attenuation for OmniLight3D / SpotLight3D:
+///   atten = pow(max(1 - (distance / range)^2, 0), attenuation_exp)
+/// The squared distance ratio gives a smoother falloff than linear at the edge.
+inline float compute_distance_attenuation(float distance, float range, float attenuation_exp) {
+	float ratio = distance / range;
+	float base = std::max(1.0f - ratio * ratio, 0.0f);
+	return std::pow(base, attenuation_exp);
+}
+
+/// Spot light cone attenuation:
+///   cos_angle = dot(-light_dir_to_point, spot_forward)
+///   If cos_angle < cos(spot_angle): outside cone → 0
+///   Otherwise: pow((cos_angle - cos(spot_angle)) / (1 - cos(spot_angle)), spot_attenuation)
+inline float compute_spot_attenuation(const Vector3 &light_to_point_dir,
+		const Vector3 &spot_forward, float spot_angle_rad, float spot_attenuation_exp) {
+	float cos_outer = std::cos(spot_angle_rad);
+	float cos_angle = (-light_to_point_dir).dot(spot_forward);
+	if (cos_angle <= cos_outer) { return 0.0f; }
+	float t = (cos_angle - cos_outer) / (1.0f - cos_outer);
+	return std::pow(std::max(t, 0.0f), spot_attenuation_exp);
+}
+
+// ========================================================================
+// PBR material shading — Cook-Torrance + multi-light + shadow + sky
 // ========================================================================
 
 inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 		const Ray &ray, const Vector3 &sun_dir, const Vector3 &sun_color,
 		const SceneShadeData &shade_data, const ShadowContext &shadows,
-		const EnvironmentData &env) {
+		const EnvironmentData &env, const SceneLightData &lights) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(sun_dir.is_finite(), "shade_material: sun direction must be finite");
 	if (!hit.hit()) {
 		// Miss → sky color (read from WorldEnvironment → ProceduralSkyMaterial)
 		float r, g, b;
@@ -365,6 +492,20 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 
 	// ---- Smooth shading normal ----
 	Vector3 n = get_smooth_normal(hit, shade_data);
+
+	// ---- Normal map perturbation (Phase 1) ----
+	// If the material has a normal map and tangent data is available,
+	// perturb the smooth normal using the TBN matrix + normal map sample.
+	if (shade_data.material_ids &&
+			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
+		uint32_t nmap_mat_id = shade_data.material_ids[hit.prim_id];
+		if (nmap_mat_id < static_cast<uint32_t>(shade_data.material_count)) {
+			const MaterialData &nmap_mat = shade_data.materials[nmap_mat_id];
+			if (nmap_mat.has_normal_texture) {
+				n = perturb_normal(n, hit, shade_data, nmap_mat);
+			}
+		}
+	}
 
 	// ---- View direction ----
 	Vector3 view_dir = (-ray.direction).normalized();
@@ -421,12 +562,42 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 	float diff_g = ag * (1.0f - metallic);
 	float diff_b = ab * (1.0f - metallic);
 
-	// ---- Directional sun light (Cook-Torrance) ----
+	// ---- Multi-light direct illumination (Cook-Torrance) ----
 	float out_r = 0.0f, out_g = 0.0f, out_b = 0.0f;
 
-	float n_dot_l = n.dot(sun_dir);
-	if (n_dot_l > 0.0f && shadows.is_lit(idx)) {
-		Vector3 h = (view_dir + sun_dir).normalized();
+	for (int li = 0; li < lights.light_count; li++) {
+		const LightData &ld = lights.lights[li];
+
+		// Compute light direction and attenuation based on light type.
+		Vector3 light_dir;   // Normalized direction FROM surface TOWARD light
+		float atten = 1.0f;  // Combined distance + spot attenuation
+
+		if (ld.type == LightData::DIRECTIONAL) {
+			light_dir = ld.direction;
+		} else {
+			// Point or spot: compute direction and distance attenuation.
+			Vector3 hit_pos = hit.position;
+			Vector3 to_light = ld.position - hit_pos;
+			float dist = to_light.length();
+			if (dist < 1e-6f || dist > ld.range) { continue; }
+			light_dir = to_light / dist;
+			atten = compute_distance_attenuation(dist, ld.range, ld.attenuation);
+
+			// Spot cone attenuation (in addition to distance).
+			if (ld.type == LightData::SPOT) {
+				float spot_atten = compute_spot_attenuation(
+					-light_dir, ld.direction, ld.spot_angle, ld.spot_angle_attenuation);
+				atten *= spot_atten;
+			}
+		}
+
+		if (atten < 1e-6f) { continue; }
+
+		float n_dot_l = n.dot(light_dir);
+		if (n_dot_l <= 0.0f) { continue; }
+		if (!shadows.is_lit(idx, li)) { continue; }
+
+		Vector3 h = (view_dir + light_dir).normalized();
 		float n_dot_h = std::max(n.dot(h), 0.0f);
 		float v_dot_h = std::max(view_dir.dot(h), 0.0f);
 
@@ -440,12 +611,18 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 		float spec_denom = 4.0f * n_dot_v * n_dot_l + 1e-7f;
 		float spec_scale = d_term * g_term / spec_denom;
 
-		// Diffuse: Lambert * (1 - F) to conserve energy
-		float diff_scale = n_dot_l / PI;
+		// Diffuse: Lambert BRDF = albedo / PI.  The rendering equation
+		// cosine factor (n_dot_l) is applied once in the final accumulation
+		// below — do NOT include it here, or it gets squared.
+		float diff_scale = 1.0f / PI;
 
-		out_r += (diff_r * (1.0f - fr) * diff_scale + fr * spec_scale) * sun_color.x * n_dot_l;
-		out_g += (diff_g * (1.0f - fg) * diff_scale + fg * spec_scale) * sun_color.y * n_dot_l;
-		out_b += (diff_b * (1.0f - fb_val) * diff_scale + fb_val * spec_scale) * sun_color.z * n_dot_l;
+		float lr = ld.color.x * atten;
+		float lg = ld.color.y * atten;
+		float lb = ld.color.z * atten;
+
+		out_r += (diff_r * (1.0f - fr) * diff_scale + fr * spec_scale) * lr * n_dot_l;
+		out_g += (diff_g * (1.0f - fg) * diff_scale + fg * spec_scale) * lg * n_dot_l;
+		out_b += (diff_b * (1.0f - fb_val) * diff_scale + fb_val * spec_scale) * lb * n_dot_l;
 	}
 
 	// ---- Ambient / indirect approximation ----
@@ -500,6 +677,8 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 
 inline void shade_albedo(RayImage &fb, int idx, const Intersection &hit,
 		const SceneShadeData &shade_data) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(fb.pixel_count() > 0, "Framebuffer must have at least one pixel");
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::ALBEDO, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -533,6 +712,8 @@ inline void shade_albedo(RayImage &fb, int idx, const Intersection &hit,
 
 inline void shade_position(RayImage &fb, int idx, const Intersection &hit,
 		float inv_range) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT_FINITE(inv_range);
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::POSITION, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -609,6 +790,8 @@ inline void shade_wireframe(RayImage &fb, int idx, const Intersection &hit) {
 
 inline void shade_uv(RayImage &fb, int idx, const Intersection &hit,
 		const SceneShadeData &shade_data) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT(fb.pixel_count() > 0, "Framebuffer must have at least one pixel");
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::UV, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -630,6 +813,8 @@ inline void shade_uv(RayImage &fb, int idx, const Intersection &hit,
 
 inline void shade_fresnel(RayImage &fb, int idx, const Intersection &hit,
 		const Ray &ray, const SceneShadeData &shade_data) {
+	RT_ASSERT_BOUNDS(idx, fb.pixel_count());
+	RT_ASSERT_VALID_RAY(ray);
 	if (!hit.hit()) {
 		fb.write_pixel(RayImage::FRESNEL, idx, 0.0f, 0.0f, 0.0f, 1.0f);
 		return;
@@ -652,8 +837,8 @@ inline void shade_all(RayImage &fb, int idx, const Intersection &hit,
 		const Ray &ray, const Vector3 &sun_dir, const Vector3 &sun_color,
 		float inv_depth_range, float inv_pos_range,
 		const SceneShadeData &shade_data, const ShadowContext &shadows,
-		const EnvironmentData &env) {
-	shade_material(fb, idx, hit, ray, sun_dir, sun_color, shade_data, shadows, env);
+		const EnvironmentData &env, const SceneLightData &lights) {
+	shade_material(fb, idx, hit, ray, sun_dir, sun_color, shade_data, shadows, env, lights);
 	shade_normal(fb, idx, hit, shade_data);
 	shade_depth(fb, idx, hit, inv_depth_range);
 	shade_barycentric(fb, idx, hit);
@@ -675,9 +860,10 @@ inline void shade_channel(RayImage &fb, int idx, const Intersection &hit,
 		float inv_depth_range, float inv_pos_range,
 		const SceneShadeData &shade_data, const ShadowContext &shadows,
 		const EnvironmentData &env,
+		const SceneLightData &lights,
 		RayImage::Channel channel) {
 	switch (channel) {
-		case RayImage::COLOR:       shade_material(fb, idx, hit, ray, sun_dir, sun_color, shade_data, shadows, env); break;
+		case RayImage::COLOR:       shade_material(fb, idx, hit, ray, sun_dir, sun_color, shade_data, shadows, env, lights); break;
 		case RayImage::NORMAL:      shade_normal(fb, idx, hit, shade_data); break;
 		case RayImage::DEPTH:       shade_depth(fb, idx, hit, inv_depth_range); break;
 		case RayImage::BARYCENTRIC: shade_barycentric(fb, idx, hit); break;
@@ -688,7 +874,7 @@ inline void shade_channel(RayImage &fb, int idx, const Intersection &hit,
 		case RayImage::WIREFRAME:   shade_wireframe(fb, idx, hit); break;
 		case RayImage::UV:          shade_uv(fb, idx, hit, shade_data); break;
 		case RayImage::FRESNEL:     shade_fresnel(fb, idx, hit, ray, shade_data); break;
-		default:                    shade_material(fb, idx, hit, ray, sun_dir, sun_color, shade_data, shadows, env); break;
+		default:                    shade_material(fb, idx, hit, ray, sun_dir, sun_color, shade_data, shadows, env, lights); break;
 	}
 }
 

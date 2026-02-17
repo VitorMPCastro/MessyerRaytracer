@@ -183,16 +183,16 @@ Compared to production ray tracers (Lighthouse 2, unity-tinybvh, TinyBVH, Jenova
 mindmap
   root((Deficiencies))
     Shading
-      Lambert only — no Cook-Torrance
-      PBR fields stored but unused
-      No metallic/roughness response
-      Flat face normals — no smooth vertex normals
-      No normal maps
+      ~~Lambert only — no Cook-Torrance~~ ✅
+      ~~PBR fields stored but unused~~ ✅
+      ~~No metallic/roughness response~~ ✅
+      ~~Flat face normals — no smooth vertex normals~~ ✅
+      ~~No normal maps~~ ✅
     Lighting
-      Single hardcoded directional light
-      No point/spot/area lights
-      No environment map / IBL
-      No shadows wired to shading
+      ~~Single hardcoded directional light~~ ✅
+      ~~No point/spot/area lights~~ ✅ point & spot
+      ~~No environment map / IBL~~ ✅
+      ~~No shadows wired to shading~~ ✅
       No emissive surfaces
     Ray Tracing
       Primary rays only
@@ -233,18 +233,18 @@ gantt
     title Phase 1 — Visual Quality
     dateFormat YYYY-MM-DD
     section Geometry
-        Smooth vertex normals           :a1, 2026-02-17, 3d
-        Normal map support              :a2, after a1, 3d
+        Smooth vertex normals           :done, a1, 2026-02-17, 3d
+        Normal map support              :done, a2, after a1, 3d
     section Shading
-        Cook-Torrance PBR (GGX+Schlick) :b1, after a1, 4d
-        Metallic/roughness response     :b2, after b1, 2d
+        Cook-Torrance PBR (GGX+Schlick) :done, b1, after a1, 4d
+        Metallic/roughness response     :done, b2, after b1, 2d
     section Lighting
-        Shadow rays (sun)               :c1, after b1, 3d
-        Point & spot lights             :c2, after c1, 3d
-        Environment map / IBL           :c3, after c2, 4d
+        Shadow rays (sun)               :done, c1, after b1, 3d
+        Point & spot lights             :done, c2, after c1, 3d
+        Environment map / IBL           :done, c3, after c2, 4d
     section Anti-Aliasing
-        Jittered sampling (CPU + GPU)   :d1, after a1, 2d
-        Temporal accumulation           :d2, after d1, 2d
+        Jittered sampling (CPU + GPU)   :done, d1, after a1, 2d
+        Temporal accumulation           :done, d2, after d1, 2d
 ```
 
 #### 1.1 — Smooth Vertex Normals ✅
@@ -310,6 +310,22 @@ vec4 accumulated = prev * (frame - 1.0) / frame + new_sample / frame;
 ```
 
 Invalidate accumulation on camera move.
+
+#### 1.6 — Normal Map Support ✅
+
+**Problem**: Smooth vertex normals give rounded silhouettes but surfaces lack fine detail (bricks, scratches, fabric weave). Godot materials with `FEATURE_NORMAL_MAPPING` and a `TEXTURE_NORMAL` are ignored.
+
+**Solution**: Extract `ARRAY_TANGENT` (4 floats per vertex: xyz tangent + w bitangent sign) during `_extract_object_triangles()`. Store per-triangle tangents in a parallel `TriangleTangents` array. At shade time, build TBN matrix from interpolated tangent + Gram-Schmidt re-orthogonalized normal + cross-product bitangent, sample the normal texture, decode from [0,1] to [-1,1], apply `normal_scale`, and transform from tangent space to world space.
+
+**Files**: `core/triangle_tangents.h` (new — storage), `api/material_data.h` (normal texture fields), `api/scene_shade_data.h` (tangent pointer), `godot/raytracer_server.cpp` (extraction + flattening), `modules/graphics/shade_pass.h` (`perturb_normal()` + integration into `shade_material()` and `shade_normal()` AOV)
+
+#### 1.7 — Point & Spot Lights ✅
+
+**Problem**: Only a single `DirectionalLight3D` sun is supported. `OmniLight3D` and `SpotLight3D` in the scene are ignored — no positional lighting, no spot cones.
+
+**Solution**: Discover all light types from the scene tree per frame (three-tier NodePath pattern). Store up to `MAX_SCENE_LIGHTS` (16) in a `SceneLightData` struct with per-light type, position, direction, color×energy, range, attenuation exponent, spot angle, and shadow flag. Multi-light shadow rays: for each light, generate shadow rays from hit points toward the light (directional = constant direction, point/spot = toward position with distance clamp). Single batched any-hit dispatch for all lights. In `shade_material()`, loop over all lights computing per-light direction, Godot-matching distance attenuation $(\max(1 - (d/r)^2, 0))^{\text{exp}}$, spot cone falloff, and the existing Cook-Torrance BRDF per light.
+
+**Files**: `api/light_data.h` (new — `LightData` + `SceneLightData`), `modules/graphics/ray_renderer.h` (`_resolve_all_lights()`, updated signatures), `modules/graphics/ray_renderer.cpp` (light discovery, multi-light shadow rays, plumbing), `modules/graphics/shade_pass.h` (multi-light shading loop, `compute_distance_attenuation()`, `compute_spot_attenuation()`, updated `ShadowContext`)
 
 ---
 
@@ -421,11 +437,11 @@ Repeat Extend→Shade→Connect for each bounce depth (typically 3-8 bounces).
 | Property | Source | Usage |
 |----------|--------|-------|
 | Albedo (color + texture) | `MaterialData` (already extracted) | Diffuse BRDF, refraction color |
-| Metallic | `MaterialData` (stored, unused) | F0 value: `mix(0.04, albedo, metallic)` |
-| Roughness | `MaterialData` (stored, unused) | GGX distribution width |
-| Specular | `MaterialData` (stored, unused) | Dielectric F0 scaling |
+| Metallic | `MaterialData` ✅ used | F0 value: `mix(0.04, albedo, metallic)` |
+| Roughness | `MaterialData` ✅ used | GGX distribution width |
+| Specular | `MaterialData` ✅ used | Dielectric F0 scaling |
 | Emission | `MaterialData` (stored, unused) | Self-illumination, light sources |
-| Normal map | Not yet extracted | Perturbed shading normal |
+| Normal map | `MaterialData` ✅ extracted + applied | Perturbed shading normal via TBN |
 
 #### Expected Visual Impact
 

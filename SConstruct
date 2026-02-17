@@ -37,7 +37,8 @@ Run the following command to download godot-cpp:
 
 env = SConscript("godot-cpp/SConstruct", {"env": env, "customs": customs})
 
-env.Append(CPPPATH=["src/"])
+env.Append(CPPPATH=["src/", "."])
+# "." allows #include "thirdparty/tinybvh/tiny_bvh.h" to resolve from project root.
 
 # Enable C++ exception handling on MSVC (required for try/catch in ThreadPool).
 if env.get("is_msvc", False):
@@ -52,17 +53,38 @@ def embed_shader_action(target, source, env):
     src_basename = os.path.basename(str(source[0]))
     # bvh_traverse.comp.glsl -> BVH_TRAVERSE_GLSL
     var_name = src_basename.split(".")[0].upper() + "_GLSL"
+    # MSVC limits string literals to ~16K bytes. For shaders exceeding this,
+    # split the raw string into concatenated chunks of ~200 lines each.
+    lines = glsl.split("\n")
+    CHUNK_SIZE = 200
     with open(str(target[0]), "w") as f:
         f.write("#pragma once\n")
         f.write("// Auto-generated from {} -- DO NOT EDIT\n".format(src_basename))
-        f.write('static const char *{} = R"(\n'.format(var_name))
-        f.write(glsl)
-        f.write(')";\n')
+        if len(lines) <= CHUNK_SIZE:
+            f.write('static const char *{} = R"(\n'.format(var_name))
+            f.write(glsl)
+            f.write(')";\n')
+        else:
+            f.write('static const char *{} =\n'.format(var_name))
+            for i in range(0, len(lines), CHUNK_SIZE):
+                chunk = "\n".join(lines[i:i + CHUNK_SIZE])
+                if i + CHUNK_SIZE < len(lines):
+                    chunk += "\n"  # preserve newline between chunks
+                f.write('R"(\n' if i == 0 else '\nR"(\n')
+                f.write(chunk)
+                f.write(')"\n')
+            f.write(';\n')
     return 0
 
 shader_bvh = env.Command(
     "src/gpu/shaders/bvh_traverse.gen.h",
     "src/gpu/shaders/bvh_traverse.comp.glsl",
+    embed_shader_action,
+)
+
+shader_cwbvh = env.Command(
+    "src/gpu/shaders/cwbvh_traverse.gen.h",
+    "src/gpu/shaders/cwbvh_traverse.comp.glsl",
     embed_shader_action,
 )
 
@@ -90,10 +112,10 @@ shader_rt_composite = env.Command(
     embed_shader_action,
 )
 
-shader_headers = [shader_bvh, shader_rt_reflections, shader_rt_denoise_spatial,
+shader_headers = [shader_bvh, shader_cwbvh, shader_rt_reflections, shader_rt_denoise_spatial,
                   shader_rt_denoise_temporal, shader_rt_composite]
 
-sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp") + Glob("src/modules/*/*.cpp")
+sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp") + Glob("src/dispatch/*.cpp") + Glob("src/modules/*/*.cpp") + Glob("src/accel/*.cpp")
 env.Depends(sources, shader_headers)
 
 if env["target"] in ["editor", "template_debug"]:

@@ -80,11 +80,13 @@ void RayBatch::add_ray_ex(const Vector3 &origin, const Vector3 &direction,
 }
 
 void RayBatch::clear() {
+	RT_ASSERT(elapsed_ms_ >= 0.0f, "clear: elapsed_ms is negative (corrupted state)");
 	rays_.clear();
 	hits_.clear();
 	hit_flags_.clear();
 	elapsed_ms_ = 0.0f;
 	stats_.reset();
+	RT_ASSERT(rays_.empty() && hits_.empty(), "clear: containers must be empty after clear");
 }
 
 int RayBatch::get_ray_count() const {

@@ -1,39 +1,88 @@
 #pragma once
-// ray_scene.h — Scene container with BVH-accelerated ray casting.
+// ray_scene.h — Flat scene container with TinyBVH-accelerated ray casting.
 //
-// Holds all triangles and a BVH acceleration structure.
+// Holds all triangles and a TinyBVH acceleration structure (BVH2 → BVH4/BVH8).
 // Call build() after adding triangles to construct the BVH.
 // Then cast_ray() and any_hit() use the BVH for O(log N) performance.
 //
-// Brute-force fallback is available by setting use_bvh = false.
-// Use it to validate BVH correctness: both methods should produce
-// identical results for the same scene and rays.
+// DESIGN NOTE (Phase 2):
+//   The primary traversal path is now SceneTLAS (two-level, instance-aware).
+//   RayScene remains for:
+//     - Single-mesh flat scenes (simple benchmarks)
+//     - Legacy code paths during migration
+//     - Brute-force validation mode (use_bvh = false)
+//
+// WHY NOT delete RayScene?
+//   RayDispatcher and RayRenderer still reference it. Phase 2 will update
+//   RayDispatcher to route through SceneTLAS, but RayScene stays available
+//   for backward compatibility and flat-scene use cases.
 
 #include "core/ray.h"
 #include "core/intersection.h"
 #include "core/triangle.h"
-#include "accel/bvh.h"
+#include "accel/tinybvh_adapter.h"
 #include "core/stats.h"
 #include "core/asserts.h"
+#include "dispatch/cpu_feature_detect.h"
 #include <vector>
 
+#ifndef TINYBVH_INST_IDX_BITS
+#define TINYBVH_INST_IDX_BITS 32
+#endif
+#include "thirdparty/tinybvh/tiny_bvh.h"
+
 struct RayScene {
+	// Non-copyable: TinyBVH types (BVH, BVH4_CPU, BVH8_CPU, BVH8_CWBVH) own raw
+	// pointers freed in their destructors but lack custom copy/move operators.
+	// A shallow memberwise copy would cause double-free / heap corruption.
+	RayScene() = default;
+	RayScene(const RayScene &) = delete;
+	RayScene &operator=(const RayScene &) = delete;
+	RayScene(RayScene &&) = delete;
+	RayScene &operator=(RayScene &&) = delete;
+
 	// All triangles in the scene.
 	std::vector<Triangle> triangles;
 
-	// BVH acceleration structure. Built by build().
-	BVH bvh;
+	// TinyBVH vertex data (3 × bvhvec4 per triangle).
+	std::vector<tinybvh::bvhvec4> vertices;
+
+	// TinyBVH acceleration structures.
+	tinybvh::BVH bvh2;
+	tinybvh::BVH4_CPU bvh4;
+	tinybvh::BVH8_CPU bvh8;
+	tinybvh::BVH8_CWBVH cwbvh;  // GPU-optimized compressed wide BVH (Phase 2).
+	bool use_avx2 = false;
+	bool built = false;
 
 	// Toggle BVH on/off. Set to false for brute-force (useful for validation).
 	bool use_bvh = true;
 
 	// Build acceleration structure. Call after all triangles are added.
-	// WARNING: reorders the triangles vector (required for BVH leaf contiguity).
 	void build() {
-		if (use_bvh && !triangles.empty()) {
-			bvh.build(triangles);
-			RT_ASSERT(bvh.is_built(), "BVH should be built after RayScene::build()");
+		if (!use_bvh || triangles.empty()) { return; }
+		RT_ASSERT(!triangles.empty(), "RayScene::build: triangles must not be empty");
+
+		const uint32_t tri_count = static_cast<uint32_t>(triangles.size());
+
+		tinybvh_adapter::triangles_to_vertices(triangles.data(), tri_count, vertices);
+
+		bvh2.Build(vertices.data(), tri_count);
+
+		use_avx2 = cpu_features::has_avx2();
+		if (use_avx2) {
+			bvh8.Build(vertices.data(), tri_count);
+		} else {
+			bvh4.Build(vertices.data(), tri_count);
 		}
+
+		// Build CWBVH for GPU traversal (1.5-2× faster than Aila-Laine BVH2 on GPU).
+		// CWBVH is a compressed 8-wide BVH with quantized child AABBs — its node layout
+		// fits perfectly into GPU cache lines and enables single-fetch 8-child testing.
+		cwbvh.Build(vertices.data(), tri_count);
+
+		built = true;
+		RT_ASSERT(built, "RayScene BVH should be built after build()");
 	}
 
 	// Cast a ray, returning the closest intersection.
@@ -41,8 +90,31 @@ struct RayScene {
 	Intersection cast_ray(const Ray &r, RayStats *stats = nullptr,
 			uint32_t query_mask = 0xFFFFFFFF) const {
 		RT_ASSERT_VALID_RAY(r);
-		if (use_bvh && bvh.is_built()) {
-			return bvh.cast_ray(r, triangles, stats, query_mask);
+		if (use_bvh && built) {
+			if (stats) { stats->rays_cast++; }
+
+			tinybvh::Ray tray = tinybvh_adapter::to_tinybvh_ray(r);
+
+			if (use_avx2) {
+				bvh8.Intersect(tray);
+			} else {
+				bvh4.Intersect(tray);
+			}
+
+			Intersection hit = tinybvh_adapter::from_tinybvh_intersection(tray, r);
+			if (hit.hit()) {
+				// Apply query mask filter.
+				if (hit.prim_id < static_cast<uint32_t>(triangles.size())) {
+					const Triangle &tri = triangles[hit.prim_id];
+					if ((tri.layers & query_mask) == 0) {
+						return Intersection{}; // Filtered out by mask.
+					}
+					hit.hit_layers = tri.layers;
+					hit.normal = tri.normal;
+				}
+				if (stats) { stats->hits++; }
+			}
+			return hit;
 		}
 
 		// Brute force fallback
@@ -64,11 +136,19 @@ struct RayScene {
 	bool any_hit(const Ray &r, RayStats *stats = nullptr,
 			uint32_t query_mask = 0xFFFFFFFF) const {
 		RT_ASSERT_VALID_RAY(r);
-		if (use_bvh && bvh.is_built()) {
-			return bvh.any_hit(r, triangles, stats, query_mask);
+		if (use_bvh && built) {
+			if (stats) { stats->rays_cast++; }
+			// NOTE: TinyBVH IsOccluded doesn't support query_mask natively.
+			// For masked queries, fall through to brute force.
+			if (query_mask == 0xFFFFFFFF) {
+				tinybvh::Ray tray = tinybvh_adapter::to_tinybvh_ray(r);
+				bool occluded = use_avx2 ? bvh8.IsOccluded(tray) : bvh4.IsOccluded(tray);
+				if (stats && occluded) { stats->hits++; }
+				return occluded;
+			}
 		}
 
-		// Brute force fallback
+		// Brute force fallback (or masked query)
 		if (stats) { stats->rays_cast++; }
 		Intersection temp;
 		for (const Triangle &tri : triangles) {
@@ -82,9 +162,7 @@ struct RayScene {
 		return false;
 	}
 
-	// Cast multiple rays at once. More cache-friendly for batch operations.
-	// Modules (graphics, audio, AI) will typically use this instead of
-	// casting one ray at a time.
+	// Cast multiple rays at once.
 	void cast_rays(const Ray *rays, Intersection *results, int count,
 			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
 		RT_ASSERT_NOT_NULL(rays);
@@ -95,36 +173,7 @@ struct RayScene {
 		}
 	}
 
-	// Cast multiple rays using 4-ray packets for BVH coherence.
-	// Processes rays in groups of 4 with packet AABB test, remainder uses single cast.
-	// Falls back to sequential cast_ray if BVH isn't built.
-	void cast_rays_packet(const Ray *rays, Intersection *results, int count,
-			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
-		RT_ASSERT_NOT_NULL(rays);
-		RT_ASSERT_NOT_NULL(results);
-		RT_ASSERT(count >= 0, "RayScene::cast_rays_packet: count must be non-negative");
-#if RAYTRACER_PACKET_SSE
-		if (use_bvh && bvh.is_built()) {
-			int i = 0;
-			// Process full packets of 4
-			for (; i + 4 <= count; i += 4) {
-				bvh.cast_ray_packet4(&rays[i], &results[i], 4, triangles, stats, query_mask);
-			}
-			// Remaining rays (1–3) as a partial packet
-			if (i < count) {
-				bvh.cast_ray_packet4(&rays[i], &results[i], count - i, triangles, stats, query_mask);
-			}
-			return;
-		}
-#endif
-		// Fallback: sequential
-		for (int i = 0; i < count; i++) {
-			results[i] = cast_ray(rays[i], stats, query_mask);
-		}
-	}
-
 	// Batch any_hit: test multiple rays, returning bool per ray.
-	// For shadow/occlusion queries where you only need hit/miss answers.
 	void any_hit_rays(const Ray *rays, bool *hit_results, int count,
 			RayStats *stats = nullptr, uint32_t query_mask = 0xFFFFFFFF) const {
 		RT_ASSERT_NOT_NULL(rays);
@@ -136,9 +185,22 @@ struct RayScene {
 	}
 
 	// Clear all geometry and reset BVH.
+	//
+	// NOTE: We intentionally do NOT reset the TinyBVH objects (bvh2, bvh4, bvh8, cwbvh)
+	// via copy assignment (e.g. `bvh2 = BVH{}`).  TinyBVH classes have user-defined
+	// destructors (AlignedFree) but no custom copy/move operators — the compiler-generated
+	// copy assignment does a shallow pointer copy, leaking the old allocation and potentially
+	// causing double-free / heap corruption (Rule of Five violation).
+	//
+	// TinyBVH's Build methods handle their own memory management: PrepareBuild checks
+	// allocatedNodes and frees + reallocates as needed, so rebuilding over a previously-
+	// built BVH is safe.  Setting `built = false` prevents stale data from being used.
 	void clear() {
+		RT_ASSERT(!built || !triangles.empty(),
+			"RayScene::clear: built flag set but no triangles");
 		triangles.clear();
-		bvh = BVH{};
+		vertices.clear();
+		built = false;
 		RT_ASSERT(triangles.empty(), "Triangles should be empty after clear()");
 	}
 

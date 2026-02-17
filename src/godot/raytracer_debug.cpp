@@ -7,6 +7,12 @@
 #include "raytracer_server.h"
 #include "core/asserts.h"
 
+// TinyBVH headers needed for BVH wireframe visualization.
+#ifndef TINYBVH_INST_IDX_BITS
+#define TINYBVH_INST_IDX_BITS 32
+#endif
+#include "thirdparty/tinybvh/tiny_bvh.h"
+
 #include <godot_cpp/classes/mesh.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/math.hpp>
@@ -453,15 +459,16 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 	if (!server) { return; }
 
 	const auto &sc = server->scene();
-	if (!sc.use_bvh || !sc.bvh.is_built()) {
+	if (!sc.use_bvh || !sc.built) {
 		UtilityFunctions::print("[RayTracerDebug] BVH not built — nothing to draw");
 		return;
 	}
 
-	const auto &nodes = sc.bvh.get_nodes();
-	if (nodes.empty()) { return; }
+	const int32_t node_count = sc.bvh2.NodeCount();
+	const auto *nodes = sc.bvh2.bvhNode;
+	if (node_count <= 0 || !nodes) { return; }
 
-	RT_ASSERT(!nodes.empty(), "_draw_bvh_wireframe: BVH nodes must not be empty after guard");
+	RT_ASSERT(node_count > 0, "_draw_bvh_wireframe: BVH nodes must not be empty after guard");
 	RT_ASSERT(bvh_depth_ >= -1, "_draw_bvh_wireframe: bvh_depth must be >= -1");
 
 	int target_depth = bvh_depth_;
@@ -470,6 +477,13 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 	auto depth_color = [](int depth) -> Color {
 		float hue = std::fmod(depth * 0.15f, 1.0f);
 		return Color::from_hsv(hue, 0.8f, 1.0f, 0.5f);
+	};
+
+	// Convert TinyBVH aabbMin/aabbMax to Godot AABB for wireframe drawing.
+	auto node_to_aabb = [](const tinybvh::BVH::BVHNode &n) -> AABB {
+		Vector3 bmin(n.aabbMin.x, n.aabbMin.y, n.aabbMin.z);
+		Vector3 bmax(n.aabbMax.x, n.aabbMax.y, n.aabbMax.z);
+		return AABB(bmin, bmax - bmin);
 	};
 
 	struct NodeEntry {
@@ -486,26 +500,26 @@ void RayTracerDebug::_draw_bvh_wireframe() {
 		auto [idx, depth] = queue.front();
 		queue.pop();
 
-		if (idx >= nodes.size()) { continue; }
+		if (idx >= static_cast<uint32_t>(node_count)) { continue; }
 		const auto &node = nodes[idx];
 
 		if (depth > max_observed_depth) { max_observed_depth = depth; }
 
 		// target_depth == -1 means "draw leaf nodes only".
 		if (target_depth == -1) {
-			if (node.is_leaf()) {
-				_draw_aabb_wireframe(node.bounds, depth_color(depth));
+			if (node.isLeaf()) {
+				_draw_aabb_wireframe(node_to_aabb(node), depth_color(depth));
 				boxes_drawn++;
 			}
 		} else if (depth == target_depth) {
-			_draw_aabb_wireframe(node.bounds, depth_color(depth));
+			_draw_aabb_wireframe(node_to_aabb(node), depth_color(depth));
 			boxes_drawn++;
 			continue;   // Don't descend past target depth.
 		}
 
-		if (!node.is_leaf()) {
-			uint32_t left = idx + 1;
-			uint32_t right = node.left_first;
+		if (!node.isLeaf()) {
+			uint32_t left = node.leftFirst;
+			uint32_t right = node.leftFirst + 1;
 			if (target_depth == -1 || depth < target_depth) {
 				queue.push({ left, depth + 1 });
 				queue.push({ right, depth + 1 });

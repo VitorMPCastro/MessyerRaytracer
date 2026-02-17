@@ -12,9 +12,10 @@
 //   Phase 3: add  const SceneLights* lights
 //   Phase 4: add  const SkySampler*  sky
 
-#include "core/material_data.h"
+#include "api/material_data.h"
 #include "core/triangle_uv.h"
 #include "core/triangle_normals.h"
+#include "core/triangle_tangents.h"
 #include <cstdint>
 
 struct SceneShadeData {
@@ -34,4 +35,9 @@ struct SceneShadeData {
 	/// Per-triangle vertex normals.  Indexed by prim_id.
 	/// Interpolate at hit point: tri_normals.interpolate(hit.u, hit.v) → Vector3.
 	const TriangleNormals *triangle_normals = nullptr;
+
+	/// Per-triangle vertex tangents.  Indexed by prim_id.
+	/// Used with normal maps to build the TBN matrix for tangent→world transform.
+	/// May be nullptr if no mesh has tangent data.
+	const TriangleTangents *triangle_tangents = nullptr;
 };

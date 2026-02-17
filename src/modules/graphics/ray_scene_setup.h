@@ -26,6 +26,8 @@
 #include <godot_cpp/classes/compositor.hpp>
 #include <godot_cpp/classes/compositor_effect.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/classes/voxel_gi.hpp>
+#include <godot_cpp/classes/voxel_gi_data.hpp>
 
 using namespace godot;
 
@@ -71,6 +73,17 @@ private:
 	int sdfgi_cascades_ = 4;
 	float sdfgi_min_cell_size_ = 0.1f;
 	bool sdfgi_use_occlusion_ = true;
+
+	// ---- VoxelGI settings ----
+	VoxelGI *voxel_gi_ = nullptr;  // Auto-created or existing child.  Lifetime: valid after _ensure_nodes() if gi_mode_ == GI_VOXEL_GI.
+	int voxel_gi_subdiv_ = 1;          // VoxelGI::SUBDIV_128 — good balance of quality/speed
+	Vector3 voxel_gi_extents_ = Vector3(10.0f, 10.0f, 10.0f);  // Half-size of probe volume
+	float voxel_gi_energy_ = 1.0f;
+	float voxel_gi_propagation_ = 0.7f;
+	float voxel_gi_bias_ = 1.5f;
+	float voxel_gi_normal_bias_ = 1.0f;
+	bool voxel_gi_interior_ = false;
+	bool voxel_gi_two_bounces_ = true;
 
 	// ---- Sky settings ----
 	bool use_procedural_sky_ = true;
@@ -141,6 +154,7 @@ private:
 
 	// ---- Internal helpers ----
 	void _ensure_nodes();
+	VoxelGI *_resolve_voxel_gi();  // Three-tier resolve: explicit child → auto-discover → create.
 	void _apply_environment();
 	void _apply_sky();
 	void _apply_sun();
@@ -178,6 +192,24 @@ public:
 	float get_sdfgi_min_cell_size() const;
 	void set_sdfgi_use_occlusion(bool enable);
 	bool get_sdfgi_use_occlusion() const;
+
+	// ---- VoxelGI ----
+	void set_voxel_gi_subdiv(int subdiv);
+	int get_voxel_gi_subdiv() const;
+	void set_voxel_gi_extents(const Vector3 &extents);
+	Vector3 get_voxel_gi_extents() const;
+	void set_voxel_gi_energy(float energy);
+	float get_voxel_gi_energy() const;
+	void set_voxel_gi_propagation(float propagation);
+	float get_voxel_gi_propagation() const;
+	void set_voxel_gi_bias(float bias);
+	float get_voxel_gi_bias() const;
+	void set_voxel_gi_normal_bias(float bias);
+	float get_voxel_gi_normal_bias() const;
+	void set_voxel_gi_interior(bool enable);
+	bool get_voxel_gi_interior() const;
+	void set_voxel_gi_two_bounces(bool enable);
+	bool get_voxel_gi_two_bounces() const;
 
 	// ---- Sky ----
 	void set_use_procedural_sky(bool enable);

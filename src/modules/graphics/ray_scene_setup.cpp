@@ -10,6 +10,9 @@
 #include <godot_cpp/classes/procedural_sky_material.hpp>
 #include <godot_cpp/classes/panorama_sky_material.hpp>
 #include <godot_cpp/classes/light3d.hpp>
+#include <godot_cpp/classes/voxel_gi.hpp>
+#include <godot_cpp/classes/voxel_gi_data.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/math.hpp>
@@ -73,6 +76,51 @@ void RaySceneSetup::_ensure_nodes() {
 
 	RT_ASSERT(environment_.is_valid(), "Environment must be created after _ensure_nodes");
 	RT_ASSERT_NOT_NULL(world_env_);
+}
+
+// ============================================================================
+// _resolve_voxel_gi — three-tier VoxelGI node resolution (hybrid ownership)
+//
+// 1. Check if we already have a cached pointer (from a previous resolve).
+// 2. Auto-discover an existing VoxelGI child/sibling in the scene tree.
+// 3. Auto-create a managed VoxelGI child node if none found.
+//
+// WHY NOT always auto-create?
+//   Users may have already placed a VoxelGI in their scene with custom probe
+//   data from a previous bake. Auto-creating would duplicate it. The three-tier
+//   pattern prefers existing nodes over creation.
+// ============================================================================
+
+VoxelGI *RaySceneSetup::_resolve_voxel_gi() {
+	RT_ASSERT(is_inside_tree(), "_resolve_voxel_gi called before node is in scene tree");
+
+	// 1. Cached pointer still valid?
+	if (voxel_gi_ && voxel_gi_->is_inside_tree()) {
+		return voxel_gi_;
+	}
+
+	// 2. Auto-discover existing VoxelGI in the scene.
+	Node *root = get_tree()->get_current_scene();
+	RT_ASSERT_NOT_NULL(root);
+	if (root) {
+		TypedArray<Node> found = root->find_children("*", "VoxelGI", true, false);
+		if (found.size() > 0) {
+			voxel_gi_ = Object::cast_to<VoxelGI>(Object::cast_to<Node>(found[0]));
+			if (voxel_gi_) {
+				UtilityFunctions::print("[RaySceneSetup] Found existing VoxelGI: ", voxel_gi_->get_name());
+				return voxel_gi_;
+			}
+		}
+	}
+
+	// 3. Auto-create a managed VoxelGI child node.
+	voxel_gi_ = memnew(VoxelGI);
+	voxel_gi_->set_name("ManagedVoxelGI");
+	add_child(voxel_gi_);
+	UtilityFunctions::print("[RaySceneSetup] Created managed VoxelGI node.");
+
+	RT_ASSERT_NOT_NULL(voxel_gi_);
+	return voxel_gi_;
 }
 
 // ============================================================================
@@ -265,6 +313,8 @@ void RaySceneSetup::_apply_sky() {
 // ============================================================================
 
 void RaySceneSetup::_apply_environment() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for ambient configuration");
+	RT_ASSERT_FINITE(ambient_energy_);
 	environment_->set_ambient_source(Environment::AMBIENT_SOURCE_SKY);
 	environment_->set_ambient_light_color(ambient_color_);
 	environment_->set_ambient_light_energy(ambient_energy_);
@@ -289,12 +339,72 @@ void RaySceneSetup::_apply_gi() {
 		environment_->set_sdfgi_bounce_feedback(0.5f);
 		environment_->set_sdfgi_read_sky_light(true);
 		environment_->set_sdfgi_energy(1.0f);
+		// Remove stale VoxelGI if switching away from it.
+		if (voxel_gi_ && voxel_gi_->get_parent() == this && voxel_gi_->get_name() == StringName("ManagedVoxelGI")) {
+			voxel_gi_->queue_free();
+			voxel_gi_ = nullptr;
+		}
 		break;
-	case GI_VOXEL_GI:
-		// VoxelGI requires a VoxelGI node as a scene child — user must add it.
+	case GI_VOXEL_GI: {
+		// Auto-disable SDFGI — the two GI systems are mutually exclusive in practice.
+		// Running both doubles the GI cost with minimal quality gain (SDFGI's cascades
+		// overlap VoxelGI's bounded volume, causing additive over-brightening).
+		environment_->set_sdfgi_enabled(false);
+
+		// Resolve or create VoxelGI node.
+		VoxelGI *gi = _resolve_voxel_gi();
+		RT_ASSERT_NOT_NULL(gi);
+		if (!gi) { break; }
+
+		// Configure VoxelGI node properties.
+		gi->set_subdiv(static_cast<VoxelGI::Subdiv>(voxel_gi_subdiv_));
+		gi->set_size(voxel_gi_extents_ * 2.0f);  // Godot uses full size, we store half-extents.
+
+		// Configure VoxelGI probe data parameters.
+		// These live on VoxelGIData, which is created by bake().
+		// If probe data already exists (previous bake or loaded from disk), update it.
+		Ref<VoxelGIData> probe_data = gi->get_probe_data();
+		if (probe_data.is_valid()) {
+			probe_data->set_energy(voxel_gi_energy_);
+			probe_data->set_propagation(voxel_gi_propagation_);
+			probe_data->set_bias(voxel_gi_bias_);
+			probe_data->set_normal_bias(voxel_gi_normal_bias_);
+			probe_data->set_interior(voxel_gi_interior_);
+			probe_data->set_use_two_bounces(voxel_gi_two_bounces_);
+		}
+
+		// Auto-bake if no probe data exists yet.
+		// bake() takes the scene root as the from_node — only geometry within
+		// the VoxelGI's AABB is voxelized.
+		if (probe_data.is_null()) {
+			Node *root = get_tree()->get_current_scene();
+			if (root) {
+				UtilityFunctions::print("[RaySceneSetup] Baking VoxelGI (subdiv=",
+						voxel_gi_subdiv_, ", extents=", voxel_gi_extents_, ")...");
+				gi->bake(root, false);
+				// After bake, configure the freshly created probe data.
+				probe_data = gi->get_probe_data();
+				if (probe_data.is_valid()) {
+					probe_data->set_energy(voxel_gi_energy_);
+					probe_data->set_propagation(voxel_gi_propagation_);
+					probe_data->set_bias(voxel_gi_bias_);
+					probe_data->set_normal_bias(voxel_gi_normal_bias_);
+					probe_data->set_interior(voxel_gi_interior_);
+					probe_data->set_use_two_bounces(voxel_gi_two_bounces_);
+				}
+				UtilityFunctions::print("[RaySceneSetup] VoxelGI bake complete.");
+			}
+		}
+		break;
+	}
 	case GI_NONE:
 	default:
 		environment_->set_sdfgi_enabled(false);
+		// Remove stale managed VoxelGI.
+		if (voxel_gi_ && voxel_gi_->get_parent() == this && voxel_gi_->get_name() == StringName("ManagedVoxelGI")) {
+			voxel_gi_->queue_free();
+			voxel_gi_ = nullptr;
+		}
 		break;
 	}
 }
@@ -327,6 +437,8 @@ void RaySceneSetup::_apply_tonemapping() {
 // ============================================================================
 
 void RaySceneSetup::_apply_ssr() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for SSR configuration");
+	RT_ASSERT_FINITE(ssr_fade_in_);
 	environment_->set_ssr_enabled(ssr_enabled_);
 	if (ssr_enabled_) {
 		environment_->set_ssr_max_steps(ssr_max_steps_);
@@ -359,6 +471,8 @@ void RaySceneSetup::_apply_ssao() {
 // ============================================================================
 
 void RaySceneSetup::_apply_ssil() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for SSIL configuration");
+	RT_ASSERT_FINITE(ssil_radius_);
 	environment_->set_ssil_enabled(ssil_enabled_);
 	if (ssil_enabled_) {
 		environment_->set_ssil_radius(ssil_radius_);
@@ -392,6 +506,8 @@ void RaySceneSetup::_apply_glow() {
 // ============================================================================
 
 void RaySceneSetup::_apply_fog() {
+	RT_ASSERT(environment_.is_valid(), "Environment must exist for fog configuration");
+	RT_ASSERT_FINITE(fog_density_);
 	environment_->set_fog_enabled(fog_enabled_);
 	if (fog_enabled_) {
 		environment_->set_fog_light_color(fog_color_);
@@ -428,6 +544,8 @@ void RaySceneSetup::_apply_dof() {
 // ============================================================================
 
 void RaySceneSetup::_apply_camera_attributes() {
+	RT_ASSERT(camera_attrs_.is_valid(), "Camera attributes must exist for auto-exposure configuration");
+	RT_ASSERT_FINITE(auto_exposure_scale_);
 	camera_attrs_->set_auto_exposure_enabled(auto_exposure_enabled_);
 	if (auto_exposure_enabled_) {
 		camera_attrs_->set_auto_exposure_scale(auto_exposure_scale_);
@@ -486,6 +604,24 @@ void RaySceneSetup::set_sdfgi_min_cell_size(float size) { sdfgi_min_cell_size_ =
 float RaySceneSetup::get_sdfgi_min_cell_size() const { return sdfgi_min_cell_size_; }
 void RaySceneSetup::set_sdfgi_use_occlusion(bool enable) { sdfgi_use_occlusion_ = enable; }
 bool RaySceneSetup::get_sdfgi_use_occlusion() const { return sdfgi_use_occlusion_; }
+
+// VoxelGI
+void RaySceneSetup::set_voxel_gi_subdiv(int subdiv) { voxel_gi_subdiv_ = subdiv; }
+int RaySceneSetup::get_voxel_gi_subdiv() const { return voxel_gi_subdiv_; }
+void RaySceneSetup::set_voxel_gi_extents(const Vector3 &extents) { voxel_gi_extents_ = extents; }
+Vector3 RaySceneSetup::get_voxel_gi_extents() const { return voxel_gi_extents_; }
+void RaySceneSetup::set_voxel_gi_energy(float energy) { voxel_gi_energy_ = energy; }
+float RaySceneSetup::get_voxel_gi_energy() const { return voxel_gi_energy_; }
+void RaySceneSetup::set_voxel_gi_propagation(float propagation) { voxel_gi_propagation_ = propagation; }
+float RaySceneSetup::get_voxel_gi_propagation() const { return voxel_gi_propagation_; }
+void RaySceneSetup::set_voxel_gi_bias(float bias) { voxel_gi_bias_ = bias; }
+float RaySceneSetup::get_voxel_gi_bias() const { return voxel_gi_bias_; }
+void RaySceneSetup::set_voxel_gi_normal_bias(float bias) { voxel_gi_normal_bias_ = bias; }
+float RaySceneSetup::get_voxel_gi_normal_bias() const { return voxel_gi_normal_bias_; }
+void RaySceneSetup::set_voxel_gi_interior(bool enable) { voxel_gi_interior_ = enable; }
+bool RaySceneSetup::get_voxel_gi_interior() const { return voxel_gi_interior_; }
+void RaySceneSetup::set_voxel_gi_two_bounces(bool enable) { voxel_gi_two_bounces_ = enable; }
+bool RaySceneSetup::get_voxel_gi_two_bounces() const { return voxel_gi_two_bounces_; }
 
 // Sky
 void RaySceneSetup::set_use_procedural_sky(bool enable) { use_procedural_sky_ = enable; }
@@ -584,6 +720,39 @@ void RaySceneSetup::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_sdfgi_use_occlusion", "enable"), &RaySceneSetup::set_sdfgi_use_occlusion);
 	ClassDB::bind_method(D_METHOD("get_sdfgi_use_occlusion"), &RaySceneSetup::get_sdfgi_use_occlusion);
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "sdfgi_use_occlusion"), "set_sdfgi_use_occlusion", "get_sdfgi_use_occlusion");
+
+	// ---- VoxelGI ----
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_subdiv", "subdiv"), &RaySceneSetup::set_voxel_gi_subdiv);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_subdiv"), &RaySceneSetup::get_voxel_gi_subdiv);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "voxel_gi_subdiv", PROPERTY_HINT_ENUM, "64,128,256,512"), "set_voxel_gi_subdiv", "get_voxel_gi_subdiv");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_extents", "extents"), &RaySceneSetup::set_voxel_gi_extents);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_extents"), &RaySceneSetup::get_voxel_gi_extents);
+	ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "voxel_gi_extents"), "set_voxel_gi_extents", "get_voxel_gi_extents");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_energy", "energy"), &RaySceneSetup::set_voxel_gi_energy);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_energy"), &RaySceneSetup::get_voxel_gi_energy);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "voxel_gi_energy", PROPERTY_HINT_RANGE, "0.0,16.0,0.01"), "set_voxel_gi_energy", "get_voxel_gi_energy");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_propagation", "propagation"), &RaySceneSetup::set_voxel_gi_propagation);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_propagation"), &RaySceneSetup::get_voxel_gi_propagation);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "voxel_gi_propagation", PROPERTY_HINT_RANGE, "0.0,1.0,0.01"), "set_voxel_gi_propagation", "get_voxel_gi_propagation");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_bias", "bias"), &RaySceneSetup::set_voxel_gi_bias);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_bias"), &RaySceneSetup::get_voxel_gi_bias);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "voxel_gi_bias", PROPERTY_HINT_RANGE, "0.0,8.0,0.01"), "set_voxel_gi_bias", "get_voxel_gi_bias");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_normal_bias", "bias"), &RaySceneSetup::set_voxel_gi_normal_bias);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_normal_bias"), &RaySceneSetup::get_voxel_gi_normal_bias);
+	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "voxel_gi_normal_bias", PROPERTY_HINT_RANGE, "0.0,8.0,0.01"), "set_voxel_gi_normal_bias", "get_voxel_gi_normal_bias");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_interior", "enable"), &RaySceneSetup::set_voxel_gi_interior);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_interior"), &RaySceneSetup::get_voxel_gi_interior);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "voxel_gi_interior"), "set_voxel_gi_interior", "get_voxel_gi_interior");
+
+	ClassDB::bind_method(D_METHOD("set_voxel_gi_two_bounces", "enable"), &RaySceneSetup::set_voxel_gi_two_bounces);
+	ClassDB::bind_method(D_METHOD("get_voxel_gi_two_bounces"), &RaySceneSetup::get_voxel_gi_two_bounces);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "voxel_gi_two_bounces"), "set_voxel_gi_two_bounces", "get_voxel_gi_two_bounces");
 
 	// ---- Sky ----
 	ClassDB::bind_method(D_METHOD("set_use_procedural_sky", "enable"), &RaySceneSetup::set_use_procedural_sky);

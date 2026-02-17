@@ -39,10 +39,13 @@ class RenderingDevice;
 struct Ray;
 struct Triangle;
 struct Intersection;
-struct BVHNode;
 struct GPURayPacked;
 struct GPUIntersectionPacked;
+
+namespace tinybvh {
 class BVH;
+class BVH8_CWBVH;
+}
 
 class GPURayCaster {
 public:
@@ -64,7 +67,13 @@ public:
 	// Upload scene geometry + BVH to GPU storage buffers.
 	// Call after building the BVH on CPU. Scene data stays on GPU until
 	// upload_scene() is called again or cleanup() is called.
-	void upload_scene(const std::vector<Triangle> &triangles, const BVH &bvh);
+	void upload_scene(const std::vector<Triangle> &triangles, const tinybvh::BVH &bvh2);
+
+	// Upload CWBVH data for faster GPU traversal (~1.5-2× faster than Aila-Laine).
+	// Must be called AFTER upload_scene() (which provides GPUTrianglePacked for
+	// layer/normal lookup). When CWBVH is uploaded, cast_rays automatically uses
+	// the faster CWBVH path. Falls back to Aila-Laine if not uploaded.
+	void upload_cwbvh(const tinybvh::BVH8_CWBVH &cwbvh);
 
 	// Cast rays on the GPU (nearest hit). Writes results into the 'results' array.
 	// Each result corresponds to the ray at the same index.
@@ -109,27 +118,41 @@ private:
 	// ---- Godot rendering device (owned) ----
 	godot::RenderingDevice *rd_ = nullptr;
 
-	// ---- Shader & pipeline ----
+	// ---- Shader & pipeline (Aila-Laine BVH2, 4 bindings) ----
 	godot::RID shader_;
 	godot::RID pipeline_;           // nearest-hit mode (RAY_MODE=0)
 	godot::RID pipeline_any_hit_;   // any-hit mode (RAY_MODE=1, early exit)
 
-	// ---- Scene buffers (uploaded once per build_scene) ----
+	// ---- CWBVH shader & pipeline (5 bindings, ~1.5-2× faster) ----
+	godot::RID cwbvh_shader_;
+	godot::RID cwbvh_pipeline_;
+	godot::RID cwbvh_pipeline_any_hit_;
+
+	// ---- Scene buffers (Aila-Laine, uploaded once per build_scene) ----
 	godot::RID triangle_buffer_;
 	godot::RID bvh_node_buffer_;
+
+	// ---- CWBVH scene buffers (uploaded via upload_cwbvh) ----
+	godot::RID cwbvh_node_buffer_;  // Raw bvhvec4 array (5 per node, 80B/node)
+	godot::RID cwbvh_tri_buffer_;   // Raw bvhvec4 array (3 per tri, 48B/tri)
 
 	// ---- Per-dispatch buffers (grow as needed) ----
 	godot::RID ray_buffer_;
 	godot::RID result_buffer_;
 	uint32_t ray_buffer_capacity_ = 0; // Current capacity in # of rays
 
-	// ---- Descriptor set ----
+	// ---- Descriptor set (Aila-Laine, 4 bindings) ----
 	godot::RID uniform_set_;
 	bool uniform_set_dirty_ = true; // Rebuild when any buffer RID changes
+
+	// ---- Descriptor set (CWBVH, 5 bindings) ----
+	godot::RID cwbvh_uniform_set_;
+	bool cwbvh_uniform_set_dirty_ = true;
 
 	// ---- State ----
 	bool initialized_ = false;
 	bool scene_uploaded_ = false;
+	bool cwbvh_uploaded_ = false;
 	bool pending_async_ = false; // True between submit_async and collect
 
 	// ---- Persistent cache (avoid per-frame heap allocation) ----
@@ -144,9 +167,11 @@ private:
 
 	// ---- Internal helpers ----
 	void free_scene_buffers();
+	void free_cwbvh_buffers();
 	void free_ray_buffers();
 	void ensure_ray_buffers(uint32_t ray_count);
 	void rebuild_uniform_set();
+	void rebuild_cwbvh_uniform_set();
 
 	// Upload rays, dispatch compute with given pipeline, submit+sync.
 	// After return, result_buffer_ contains GPU output ready for readback.

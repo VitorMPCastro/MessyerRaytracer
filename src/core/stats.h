@@ -23,7 +23,7 @@ struct RayStats {
 	uint64_t bvh_nodes_visited = 0;
 	uint64_t hits = 0;
 
-	void reset() {
+	void reset() { // rt-lint: suppress tiger/assertion-density
 		rays_cast = 0;
 		tri_tests = 0;
 		bvh_nodes_visited = 0;

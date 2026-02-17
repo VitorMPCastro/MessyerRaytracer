@@ -36,6 +36,10 @@ using namespace godot;
 
 class RayCamera {
 public:
+	RayCamera() = default;
+	RayCamera(const RayCamera &) = delete;
+	RayCamera &operator=(const RayCamera &) = delete;
+
 	// ====================================================================
 	// Setup — call once per frame (or whenever the camera changes)
 	// ====================================================================
@@ -203,6 +207,8 @@ private:
 	// ---- Setup helpers ----
 
 	void _setup_perspective(Camera3D *camera) {
+		RT_ASSERT_NOT_NULL(camera);
+		RT_ASSERT(camera->get_fov() > 0.0f, "_setup_perspective: FOV must be positive");
 		float fov_deg = camera->get_fov();
 		float aspect  = static_cast<float>(width_) / static_cast<float>(height_);
 		float tan_half = std::tan(fov_deg * 0.5f * (Math_PI / 180.0f));
@@ -213,6 +219,8 @@ private:
 	}
 
 	void _setup_orthographic(Camera3D *camera) {
+		RT_ASSERT_NOT_NULL(camera);
+		RT_ASSERT(camera->get_size() > 0.0f, "_setup_orthographic: size must be positive");
 		float size   = camera->get_size();       // full vertical extent in world units
 		float aspect = static_cast<float>(width_) / static_cast<float>(height_);
 

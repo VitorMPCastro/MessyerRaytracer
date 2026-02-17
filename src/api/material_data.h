@@ -47,4 +47,21 @@ struct MaterialData {
 
 	/// Quick check: true if albedo_texture is valid and ready for sampling.
 	bool has_albedo_texture = false;
+
+	// ---- Normal map data (Phase 1 — Normal Map Support) ----
+
+	/// Decompressed normal map image.  Null if no normal texture is assigned.
+	/// Normal maps are stored in tangent space (OpenGL convention: R=X, G=Y, B=Z).
+	Ref<Image> normal_texture;
+
+	/// Cached normal map dimensions (avoids virtual calls during shading).
+	int normal_tex_width = 0;
+	int normal_tex_height = 0;
+
+	/// Normal map strength multiplier (from BaseMaterial3D::get_normal_scale()).
+	/// 1.0 = full strength, 0.0 = no perturbation.
+	float normal_scale = 1.0f;
+
+	/// Quick check: true if normal_texture is valid and ready for sampling.
+	bool has_normal_texture = false;
 };

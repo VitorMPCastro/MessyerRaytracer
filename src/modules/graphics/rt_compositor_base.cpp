@@ -11,12 +11,13 @@
 #include <godot_cpp/core/class_db.hpp>
 
 #include "api/ray_service.h"
-// NOTE: accel/ray_scene.h is included here despite the module decoupling rule
-// (modules should only include api/ and core/). This is a justified exception:
-// RTCompositorBase must upload BVH node data and triangle data to the GPU, which
-// requires direct access to the BVH data structures. Abstracting this behind
-// IRayService would add an unnecessary indirection layer with no benefit —
-// the GPU upload is inherently tied to the concrete BVH layout.
+// NOTE: gpu/gpu_structs.h and accel/ray_scene.h are included here despite the
+// module decoupling rule (modules should only include api/ and core/). This is
+// a justified exception: RTCompositorBase must upload BVH node data and triangle
+// data to the GPU, which requires direct access to the BVH data structures and
+// BVH-specific GPU node formats. Phase 2 (TinyBVH) will provide a cleaner
+// abstraction via IRayService::get_gpu_scene_data().
+#include "gpu/gpu_structs.h"
 #include "accel/ray_scene.h"
 #include "core/triangle.h"
 #include "core/asserts.h"
@@ -201,10 +202,10 @@ void RTCompositorBase::upload_scene_to_shared_device() {
 	const RayScene *scene_ptr = svc->get_scene();
 	if (!scene_ptr) { return; }
 	const RayScene &scene = *scene_ptr;
-	if (scene.triangles.empty() || !scene.bvh.is_built()) { return; }
+	if (scene.triangles.empty() || !scene.built) { return; }
 
 	uint32_t tri_count = static_cast<uint32_t>(scene.triangles.size());
-	uint32_t node_count = static_cast<uint32_t>(scene.bvh.get_nodes().size());
+	uint32_t node_count = static_cast<uint32_t>(scene.bvh2.NodeCount());
 
 	// Only re-upload if scene has changed.
 	if (scene_uploaded_ && tri_count == uploaded_tri_count_ && node_count == uploaded_node_count_) {
@@ -229,18 +230,20 @@ void RTCompositorBase::upload_scene_to_shared_device() {
 		g._pad3 = 0.0f;
 	}
 
-	// ---- Convert BVH nodes to GPU format ----
-	const std::vector<BVHNode> &nodes = scene.bvh.get_nodes();
+	// ---- Convert TinyBVH BVH2 nodes to GPU format ----
+	// TinyBVH BVH2 node layout (32 bytes):
+	//   bvhvec3 aabbMin; uint32_t leftFirst;
+	//   bvhvec3 aabbMax; uint32_t triCount;
+	// This maps directly to GPUBVHNodePacked (same semantic, same 32 bytes).
+	const tinybvh::BVH::BVHNode *nodes = scene.bvh2.bvhNode;
 	std::vector<GPUBVHNodePacked> gpu_nodes(node_count);
 	for (uint32_t i = 0; i < node_count; i++) {
-		const BVHNode &n = nodes[i];
+		const tinybvh::BVH::BVHNode &n = nodes[i];
 		GPUBVHNodePacked &g = gpu_nodes[i];
-		Vector3 bmin = n.bounds.position;
-		Vector3 bmax = bmin + n.bounds.size;
-		g.bounds_min[0] = bmin.x; g.bounds_min[1] = bmin.y; g.bounds_min[2] = bmin.z;
-		g.left_first = n.left_first;
-		g.bounds_max[0] = bmax.x; g.bounds_max[1] = bmax.y; g.bounds_max[2] = bmax.z;
-		g.count = n.count;
+		g.bounds_min[0] = n.aabbMin.x; g.bounds_min[1] = n.aabbMin.y; g.bounds_min[2] = n.aabbMin.z;
+		g.left_first = n.leftFirst;
+		g.bounds_max[0] = n.aabbMax.x; g.bounds_max[1] = n.aabbMax.y; g.bounds_max[2] = n.aabbMax.z;
+		g.count = n.triCount;
 	}
 
 	// ---- Upload triangle buffer ----
@@ -277,8 +280,11 @@ void RTCompositorBase::upload_scene_to_shared_device() {
 // ============================================================================
 
 void RTCompositorBase::free_scene_buffers() {
-	RT_ASSERT_NOT_NULL(rd_);
+	// rd_ can legitimately be null if the effect was never rendered (destructor
+	// path: _cleanup() → free_scene_buffers() runs before rd_ is ever assigned).
+	// This is a normal lifecycle — not an error.
 	if (!rd_) { return; }
+	RT_ASSERT_NOT_NULL(rd_);
 	if (shared_triangle_buffer_.is_valid()) {
 		rd_->free_rid(shared_triangle_buffer_);
 		shared_triangle_buffer_ = RID();
@@ -300,6 +306,8 @@ void RTCompositorBase::free_scene_buffers() {
 // ============================================================================
 
 Ref<RDUniform> RTCompositorBase::make_storage_uniform(int binding, const RID &buffer) {
+	RT_ASSERT(binding >= 0, "make_storage_uniform: binding must be non-negative");
+	RT_ASSERT(buffer.is_valid(), "make_storage_uniform: buffer RID must be valid");
 	Ref<RDUniform> u;
 	u.instantiate();
 	u->set_uniform_type(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER);
@@ -320,6 +328,8 @@ Ref<RDUniform> RTCompositorBase::make_sampler_uniform(int binding, const RID &sa
 }
 
 Ref<RDUniform> RTCompositorBase::make_image_uniform(int binding, const RID &image) {
+	RT_ASSERT(binding >= 0, "make_image_uniform: binding must be non-negative");
+	RT_ASSERT(image.is_valid(), "make_image_uniform: image RID must be valid");
 	Ref<RDUniform> u;
 	u.instantiate();
 	u->set_uniform_type(RenderingDevice::UNIFORM_TYPE_IMAGE);
@@ -349,6 +359,7 @@ void RTCompositorBase::end_compute_label() {
 // ============================================================================
 
 void RTCompositorBase::_cleanup() {
+	RT_ASSERT(!render_initialized_ || rd_ != nullptr, "_cleanup: initialized but no RenderingDevice");
 	free_scene_buffers();
 
 	if (rd_) {
@@ -359,6 +370,7 @@ void RTCompositorBase::_cleanup() {
 	// NOTE: We do NOT memdelete rd_ — it's Godot's shared device, not ours.
 	rd_ = nullptr;
 	render_initialized_ = false;
+	RT_ASSERT(!render_initialized_, "_cleanup: render_initialized_ must be false after cleanup");
 }
 
 // ============================================================================

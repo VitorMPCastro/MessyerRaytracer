@@ -97,6 +97,7 @@ struct Triangle {
 			out.u = u;           // Barycentric coord for v1 (already computed above)
 			out.v = v;           // Barycentric coord for v2 (already computed above)
 			out.prim_id = id;
+			out.hit_layers = layers;
 			return true;
 		}
 

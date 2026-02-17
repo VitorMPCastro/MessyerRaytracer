@@ -5,9 +5,9 @@
 // Möller-Trumbore algorithm with 128-bit SSE intrinsics.
 //
 // WHEN DOES THIS HELP?
-//   Each BVH leaf contains up to MAX_LEAF_SIZE=4 triangles.
-//   The scalar code tests them sequentially (4 full Möller-Trumbore passes).
-//   The SIMD code tests all 4 in parallel — same arithmetic, 4× throughput.
+//   BVH leaves typically contain a small number of triangles (TinyBVH default).
+//   The scalar code tests them sequentially (N full Möller-Trumbore passes).
+//   The SIMD code tests up to 4 in parallel — same arithmetic, up to 4× throughput.
 //
 // HOW IT WORKS:
 //   1. Gather triangle edge/vertex data from AoS layout into SoA SSE registers

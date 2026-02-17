@@ -94,7 +94,8 @@ int RayTracerServer::register_mesh(Node *p_node) {
 	std::vector<uint32_t> material_ids;
 	std::vector<TriangleUV> uvs;
 	std::vector<TriangleNormals> normals;
-	_extract_object_triangles(mesh_inst, tris, materials, material_ids, uvs, normals);
+	std::vector<TriangleTangents> tangents;
+	_extract_object_triangles(mesh_inst, tris, materials, material_ids, uvs, normals, tangents);
 
 	if (tris.empty()) {
 		ERR_PRINT("[RayTracerServer] register_mesh: mesh has no triangles");
@@ -129,6 +130,7 @@ int RayTracerServer::register_mesh(Node *p_node) {
 	entry.object_material_ids = std::move(material_ids);
 	entry.object_triangle_uvs = std::move(uvs);
 	entry.object_triangle_normals = std::move(normals);
+	entry.object_triangle_tangents = std::move(tangents);
 	entry.layer_mask = mask;
 	entry.valid = true;
 
@@ -166,7 +168,7 @@ void RayTracerServer::build() {
 	const char *backend_names[] = { "CPU", "GPU", "Auto" };
 	const char *be = backend_names[static_cast<int>(backend_mode_)];
 
-	if (sc.use_bvh && sc.bvh.is_built()) {
+	if (sc.use_bvh && sc.built) {
 		UtilityFunctions::print("[RayTracerServer] Built scene: ",
 			dispatcher_.triangle_count(), " triangles, ",
 			dispatcher_.bvh_node_count(), " BVH nodes (depth ",
@@ -183,6 +185,8 @@ void RayTracerServer::clear() {
 	tlas_.clear();
 	dispatcher_.scene().clear();
 	scene_dirty_ = true;
+	RT_ASSERT(meshes_.empty(), "clear: meshes not emptied");
+	RT_ASSERT(scene_dirty_, "clear: scene_dirty must be true after clear");
 }
 
 // ============================================================================
@@ -191,6 +195,8 @@ void RayTracerServer::clear() {
 
 Dictionary RayTracerServer::cast_ray(const Vector3 &origin, const Vector3 &direction,
 		int layer_mask) {
+	RT_ASSERT(direction.length_squared() > 0.0f, "cast_ray: direction must not be zero");
+	RT_ASSERT(origin.is_finite(), "cast_ray: origin must be finite");
 	std::shared_lock<std::shared_mutex> lock(scene_mutex_);
 	Dictionary result;
 
@@ -210,6 +216,8 @@ Dictionary RayTracerServer::cast_ray(const Vector3 &origin, const Vector3 &direc
 
 bool RayTracerServer::any_hit(const Vector3 &origin, const Vector3 &direction,
 		float max_distance, int layer_mask) {
+	RT_ASSERT(direction.length_squared() > 0.0f, "any_hit: direction must not be zero");
+	RT_ASSERT(max_distance > 0.0f, "any_hit: max_distance must be positive");
 	std::shared_lock<std::shared_mutex> lock(scene_mutex_);
 	Ray r(origin, direction.normalized());
 	r.t_max = max_distance;
@@ -350,12 +358,12 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 		std::vector<MaterialData> &out_materials,
 		std::vector<uint32_t> &out_material_ids,
 		std::vector<TriangleUV> &out_uvs,
-		std::vector<TriangleNormals> &out_normals) {
+		std::vector<TriangleNormals> &out_normals,
+		std::vector<TriangleTangents> &out_tangents) {
 	RT_ASSERT_NOT_NULL(mesh_inst);
+	RT_ASSERT(mesh_inst->get_mesh().is_valid(), "_extract_object_triangles: mesh_inst must have a valid mesh");
 
 	Ref<Mesh> mesh = mesh_inst->get_mesh();
-	if (mesh.is_null()) { return; }
-
 	int surface_count = mesh->get_surface_count();
 
 	for (int surf = 0; surf < surface_count; surf++) {
@@ -387,6 +395,16 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 		}
 		bool has_normals = vert_normals.size() > 0;
 
+		// ---- Extract vertex tangents for this surface (Phase 1 — Normal Maps) ----
+		// Godot stores tangents as PackedFloat32Array with 4 floats per vertex:
+		//   (tx, ty, tz, sign) where sign is +1 or -1 for bitangent direction.
+		PackedFloat32Array vert_tangents;
+		if (arrays.size() > Mesh::ARRAY_TANGENT &&
+				arrays[Mesh::ARRAY_TANGENT].get_type() == Variant::PACKED_FLOAT32_ARRAY) {
+			vert_tangents = arrays[Mesh::ARRAY_TANGENT];
+		}
+		bool has_tangents = (vert_tangents.size() >= vertices.size() * 4);
+
 		// ---- Extract material for this surface ----
 		MaterialData mat;
 		Ref<Material> godot_mat = mesh_inst->get_active_material(surf);
@@ -413,6 +431,27 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 						mat.tex_width           = img->get_width();
 						mat.tex_height          = img->get_height();
 						mat.has_albedo_texture  = true;
+					}
+				}
+
+				// ---- Extract normal map texture (Phase 1 — Normal Maps) ----
+				// BaseMaterial3D::FEATURE_NORMAL_MAPPING must be enabled for the
+				// normal texture to be active.  We check the feature flag to avoid
+				// extracting unused textures.
+				if (base->get_feature(BaseMaterial3D::FEATURE_NORMAL_MAPPING)) {
+					Ref<Texture2D> norm_tex = base->get_texture(BaseMaterial3D::TEXTURE_NORMAL);
+					if (norm_tex.is_valid()) {
+						Ref<Image> norm_img = norm_tex->get_image();
+						if (norm_img.is_valid() && !norm_img->is_empty()) {
+							if (norm_img->is_compressed()) {
+								norm_img->decompress();
+							}
+							mat.normal_texture       = norm_img;
+							mat.normal_tex_width     = norm_img->get_width();
+							mat.normal_tex_height    = norm_img->get_height();
+							mat.normal_scale         = base->get_normal_scale();
+							mat.has_normal_texture   = true;
+						}
 					}
 				}
 			}
@@ -451,6 +490,21 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 					tri_n.n0 = tri_n.n1 = tri_n.n2 = fn;
 				}
 				out_normals.push_back(tri_n);
+
+				// Tangent extraction: 4 floats per vertex (tx, ty, tz, sign).
+				TriangleTangents tri_t;
+				if (has_tangents) {
+					int i0 = indices[i] * 4;
+					int i1 = indices[i + 1] * 4;
+					int i2 = indices[i + 2] * 4;
+					tri_t.t0 = Vector3(vert_tangents[i0], vert_tangents[i0 + 1], vert_tangents[i0 + 2]);
+					tri_t.sign0 = vert_tangents[i0 + 3];
+					tri_t.t1 = Vector3(vert_tangents[i1], vert_tangents[i1 + 1], vert_tangents[i1 + 2]);
+					tri_t.sign1 = vert_tangents[i1 + 3];
+					tri_t.t2 = Vector3(vert_tangents[i2], vert_tangents[i2 + 1], vert_tangents[i2 + 2]);
+					tri_t.sign2 = vert_tangents[i2 + 3];
+				}
+				out_tangents.push_back(tri_t);
 			}
 		} else {
 			for (int i = 0; i + 2 < vertices.size(); i += 3) {
@@ -478,6 +532,21 @@ void RayTracerServer::_extract_object_triangles(MeshInstance3D *mesh_inst,
 					tri_n.n0 = tri_n.n1 = tri_n.n2 = fn;
 				}
 				out_normals.push_back(tri_n);
+
+				// Tangent extraction: 4 floats per vertex (tx, ty, tz, sign).
+				TriangleTangents tri_t;
+				if (has_tangents) {
+					int i0 = i * 4;
+					int i1 = (i + 1) * 4;
+					int i2 = (i + 2) * 4;
+					tri_t.t0 = Vector3(vert_tangents[i0], vert_tangents[i0 + 1], vert_tangents[i0 + 2]);
+					tri_t.sign0 = vert_tangents[i0 + 3];
+					tri_t.t1 = Vector3(vert_tangents[i1], vert_tangents[i1 + 1], vert_tangents[i1 + 2]);
+					tri_t.sign1 = vert_tangents[i1 + 3];
+					tri_t.t2 = Vector3(vert_tangents[i2], vert_tangents[i2 + 1], vert_tangents[i2 + 2]);
+					tri_t.sign2 = vert_tangents[i2 + 3];
+				}
+				out_tangents.push_back(tri_t);
 			}
 		}
 	}
@@ -498,11 +567,9 @@ void RayTracerServer::_rebuild_scene() {
 	for (size_t i = 0; i < meshes_.size(); i++) {
 		if (!meshes_[i].valid) { continue; }
 
-		// Validate that the node still exists.
 		Object *obj = ObjectDB::get_instance(ObjectID(meshes_[i].node_id));
-		MeshInstance3D *mesh_inst = obj ? Object::cast_to<MeshInstance3D>(obj) : nullptr;
+		MeshInstance3D *mesh_inst = Object::cast_to<MeshInstance3D>(obj);
 		if (!mesh_inst) {
-			// Node was freed without unregistering -- clean up silently.
 			meshes_[i].valid = false;
 			continue;
 		}
@@ -525,6 +592,10 @@ void RayTracerServer::_rebuild_scene() {
 		tlas_.build_tlas();
 	}
 
+	// Set TLAS on dispatcher so CPU path uses two-level traversal (Phase 2).
+	// This routes CPU ray casting through TinyBVH's TLAS with BVH4/BVH8 per BLAS.
+	dispatcher_.set_tlas(&tlas_);
+
 	// 2. Flatten all instance triangles to world space for the flat dispatcher.
 	//    This preserves SIMD packet traversal on CPU and the existing GPU shader.
 	//    Triangles are stamped with their mesh's visibility layer mask.
@@ -533,6 +604,7 @@ void RayTracerServer::_rebuild_scene() {
 	scene_material_ids_.clear();
 	scene_triangle_uvs_.clear();
 	scene_triangle_normals_.clear();
+	scene_triangle_tangents_.clear();
 
 	RT_ASSERT(dispatcher_.scene().triangles.empty(),
 		"_rebuild_scene: scene must be empty after clear");
@@ -548,6 +620,7 @@ void RayTracerServer::_rebuild_scene() {
 		const std::vector<uint32_t> *material_ids;
 		const std::vector<TriangleUV> *triangle_uvs;
 		const std::vector<TriangleNormals> *triangle_normals;
+		const std::vector<TriangleTangents> *triangle_tangents;
 	};
 	std::vector<BlasInfo> blas_info;
 	uint32_t mat_offset = 0;
@@ -559,6 +632,7 @@ void RayTracerServer::_rebuild_scene() {
 		bi.material_ids = &meshes_[i].object_material_ids;
 		bi.triangle_uvs = &meshes_[i].object_triangle_uvs;
 		bi.triangle_normals = &meshes_[i].object_triangle_normals;
+		bi.triangle_tangents = &meshes_[i].object_triangle_tangents;
 		blas_info.push_back(bi);
 		for (const auto &m : meshes_[i].object_materials) {
 			scene_materials_.push_back(m);
@@ -610,6 +684,22 @@ void RayTracerServer::_rebuild_scene() {
 				tn.n0 = tn.n1 = tn.n2 = fn;
 			}
 			scene_triangle_normals_.push_back(tn);
+
+			// Map this flattened triangle to its world-space vertex tangents.
+			// Tangents are directional vectors — transform by basis like normals.
+			// The bitangent sign (w) is not affected by the transform.
+			TriangleTangents tt;
+			if (bi && bi->triangle_tangents && tri.id < bi->triangle_tangents->size()) {
+				const TriangleTangents &obj_t = (*bi->triangle_tangents)[tri.id];
+				Basis tangent_basis = inst.transform.basis;
+				tt.t0 = tangent_basis.xform(obj_t.t0).normalized();
+				tt.t1 = tangent_basis.xform(obj_t.t1).normalized();
+				tt.t2 = tangent_basis.xform(obj_t.t2).normalized();
+				tt.sign0 = obj_t.sign0;
+				tt.sign1 = obj_t.sign1;
+				tt.sign2 = obj_t.sign2;
+			}
+			scene_triangle_tangents_.push_back(tt);
 		}
 	}
 
@@ -636,6 +726,7 @@ SceneShadeData RayTracerServer::get_scene_shade_data() const {
 	data.triangle_count = static_cast<int>(scene_material_ids_.size());
 	data.triangle_uvs   = scene_triangle_uvs_.data();
 	data.triangle_normals = scene_triangle_normals_.data();
+	data.triangle_tangents = scene_triangle_tangents_.data();
 
 	RT_ASSERT(data.material_count >= 0, "get_scene_shade_data: material_count must be non-negative");
 	RT_ASSERT(data.triangle_count >= 0, "get_scene_shade_data: triangle_count must be non-negative");

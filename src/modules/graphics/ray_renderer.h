@@ -25,6 +25,8 @@
 #include <godot_cpp/classes/node3d.hpp>
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/directional_light3d.hpp>
+#include <godot_cpp/classes/omni_light3d.hpp>
+#include <godot_cpp/classes/spot_light3d.hpp>
 #include <godot_cpp/classes/world_environment.hpp>
 #include <godot_cpp/classes/environment.hpp>
 #include <godot_cpp/classes/sky.hpp>
@@ -39,12 +41,13 @@
 #include "modules/graphics/ray_camera.h"
 #include "modules/graphics/ray_image.h"
 #include "core/intersection.h"
+#include "api/light_data.h"
 
 #include <memory>
 #include <vector>
 
-// Forward declare — definition in dispatch/thread_pool.h, included in .cpp only.
-class ThreadPool;
+// Forward declare — we use the abstract dispatch interface from api/.
+class IThreadDispatch;
 
 using namespace godot;
 
@@ -151,7 +154,8 @@ private:
 	std::vector<Ray> rays_;
 	std::vector<Intersection> hits_;
 	std::vector<Ray> shadow_rays_;        // Shadow rays toward sun from hit points
-	std::vector<uint8_t> shadow_mask_;    // 0 = in shadow, 1 = lit (for shade pass)
+	std::vector<uint8_t> shadow_mask_;    // 0 = in shadow, 1 = lit (for shade pass) — per light
+	std::vector<uint8_t> shadow_hit_flags_; // Reused buffer for any-hit results (avoids per-frame alloc)
 
 	// ---- Temporal accumulation (anti-aliasing) ----
 	std::vector<float> accum_buffer_;    // Accumulated RGB per pixel (3 floats each)
@@ -166,7 +170,7 @@ private:
 	uint64_t cached_panorama_instance_id_ = 0;   // ObjectID of the last-seen panorama Texture2D
 	Ref<ImageTexture> output_texture_;
 	Ref<Image> output_image_;  // Cached for zero-alloc parallel conversion
-	std::unique_ptr<ThreadPool> pool_;  // Parallel raygen / shade / convert
+	std::unique_ptr<IThreadDispatch> pool_;  // Parallel raygen / shade / convert
 
 	// ---- Timing (ms) ----
 	float total_ms_    = 0.0f;
@@ -184,11 +188,15 @@ private:
 	DirectionalLight3D *_resolve_light() const;
 	WorldEnvironment *_resolve_environment() const;
 
+	/// Discover all lights in the scene (directional, omni, spot) and populate
+	/// a SceneLightData struct.  Called once per frame.
+	SceneLightData _resolve_all_lights() const;
+
 	// ---- Internal pipeline stages ----
 	void _generate_rays(Camera3D *cam);
 	void _trace_rays(IRayService *svc);
-	void _trace_shadow_rays(IRayService *svc, const Vector3 &sun_dir);
-	void _shade_results(Camera3D *cam, DirectionalLight3D *light, WorldEnvironment *world_env);
+	void _trace_shadow_rays(IRayService *svc, const SceneLightData &lights);
+	void _shade_results(Camera3D *cam, const SceneLightData &lights, WorldEnvironment *world_env);
 	void _convert_output();
 };
 

@@ -1,0 +1,103 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://demos/normal_map_demo.gd" id="1_script"]
+[ext_resource type="ArrayMesh" path="res://assets/meshes/subdivided_plane.obj" id="2_plane"]
+[ext_resource type="ArrayMesh" path="res://assets/meshes/uv_sphere.obj" id="3_sphere"]
+[ext_resource type="Texture2D" path="res://assets/textures/brick_normal.png" id="4_brick_normal"]
+[ext_resource type="Texture2D" path="res://assets/textures/checker_albedo.png" id="5_checker"]
+
+[sub_resource type="StandardMaterial3D" id="Mat_brick_normal"]
+albedo_color = Color(0.75, 0.55, 0.40, 1)
+albedo_texture = ExtResource("5_checker")
+normal_enabled = true
+normal_scale = 1.5
+normal_texture = ExtResource("4_brick_normal")
+
+[sub_resource type="StandardMaterial3D" id="Mat_flat"]
+albedo_color = Color(0.75, 0.55, 0.40, 1)
+albedo_texture = ExtResource("5_checker")
+
+[sub_resource type="StandardMaterial3D" id="Mat_sphere_normal"]
+albedo_color = Color(0.7, 0.7, 0.7, 1)
+normal_enabled = true
+normal_scale = 1.2
+normal_texture = ExtResource("4_brick_normal")
+
+[sub_resource type="StandardMaterial3D" id="Mat_sphere_flat"]
+albedo_color = Color(0.7, 0.7, 0.7, 1)
+
+[sub_resource type="StandardMaterial3D" id="Mat_floor"]
+albedo_color = Color(0.35, 0.35, 0.4, 1)
+
+[sub_resource type="PlaneMesh" id="FloorMesh"]
+material = SubResource("Mat_floor")
+size = Vector2(16, 16)
+
+[node name="NormalMapDemo" type="Node3D"]
+script = ExtResource("1_script")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.96593, 0.25882, 0, -0.25882, 0.96593, 0, 3, 7)
+fov = 65.0
+
+[node name="RaySceneSetup" type="RaySceneSetup" parent="."]
+tonemap_mode = 3
+
+[node name="RayRenderer" type="RayRenderer" parent="."]
+camera_path = NodePath("../Camera3D")
+resolution = Vector2i(640, 480)
+
+[node name="Display" type="CanvasLayer" parent="."]
+
+[node name="RenderView" type="TextureRect" parent="Display"]
+unique_name_in_owner = true
+texture_filter = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+stretch_mode = 5
+
+[node name="HUD" type="Label" parent="Display"]
+unique_name_in_owner = true
+offset_left = 10.0
+offset_top = 10.0
+theme_override_colors/font_color = Color(1, 1, 0.6, 1)
+theme_override_font_sizes/font_size = 16
+
+[node name="Floor" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.01, 0)
+mesh = SubResource("FloorMesh")
+
+[node name="PlaneFlat" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.5, 0, 0)
+mesh = ExtResource("2_plane")
+surface_material_override/0 = SubResource("Mat_flat")
+
+[node name="PlaneNormalMapped" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 0, 0)
+mesh = ExtResource("2_plane")
+surface_material_override/0 = SubResource("Mat_brick_normal")
+
+[node name="SphereFlat" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.5, 1.5, -2.5)
+mesh = ExtResource("3_sphere")
+surface_material_override/0 = SubResource("Mat_sphere_flat")
+
+[node name="SphereNormalMapped" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 1.5, -2.5)
+mesh = ExtResource("3_sphere")
+surface_material_override/0 = SubResource("Mat_sphere_normal")
+
+[node name="Labels" type="Node3D" parent="."]
+
+[node name="LabelFlat" type="Label3D" parent="Labels"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2.5, 3.5, -2.5)
+text = "No Normal Map"
+font_size = 48
+
+[node name="LabelNormal" type="Label3D" parent="Labels"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 3.5, -2.5)
+text = "Brick Normal Map"
+font_size = 48

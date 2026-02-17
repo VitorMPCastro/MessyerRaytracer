@@ -39,11 +39,13 @@
 // Example: 0b1101 → 0b001_001_000_001
 // This is step 1 of computing a 3D Morton code.
 inline uint32_t morton_spread_10(uint32_t v) {
+	RT_ASSERT((v & ~0x3FFu) == 0, "morton_spread_10: input must fit in 10 bits");
 	v &= 0x000003FFu;                      // mask to 10 bits
 	v = (v | (v << 16)) & 0x030000FFu;     // ---- ----  ---- ---- 0000 00-- ---- ----
 	v = (v | (v <<  8)) & 0x0300F00Fu;     // 0000 00-- 0000 ---- 0000 00-- 0000 ----
 	v = (v | (v <<  4)) & 0x030C30C3u;     // 00-- 00-- 00-- 00-- 00-- 00-- 00-- 00--
 	v = (v | (v <<  2)) & 0x09249249u;     // 0--0 --0- -0-- 0--0 --0- -0-- 0--0 --0-
+	RT_ASSERT((v & ~0x09249249u) == 0, "morton_spread_10: output bit pattern invalid");
 	return v;
 }
 
@@ -60,6 +62,8 @@ inline uint32_t morton_encode_3d(uint32_t x, uint32_t y, uint32_t z) {
 // Maps direction vector [-1,1]³ → [0,1023]³ → 30-bit Morton code.
 
 inline uint32_t ray_direction_morton(const Vector3 &dir) {
+	RT_ASSERT(dir.is_finite(), "ray_direction_morton: direction must be finite");
+	RT_ASSERT(dir.length_squared() > 0.0f, "ray_direction_morton: direction must not be zero");
 	// Map [-1, 1] → [0, 1023] (10 bits).
 	// Clamp for safety (unit vectors should already be in range).
 	auto quantize = [](float v) -> uint32_t {

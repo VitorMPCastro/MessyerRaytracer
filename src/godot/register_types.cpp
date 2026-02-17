@@ -6,6 +6,7 @@
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/classes/engine.hpp>
 
+#include "core/asserts.h"
 #include "raytracer_server.h"
 #include "raytracer_probe.h"
 #include "raytracer_debug.h"
@@ -41,6 +42,8 @@ void uninitialize_gdextension_types(ModuleInitializationLevel p_level) {
 
 	Engine *engine = Engine::get_singleton();
 	RayTracerServer *server = RayTracerServer::get_singleton();
+	RT_ASSERT_NOT_NULL(engine);
+	RT_ASSERT_NOT_NULL(server);
 	if (engine && server) {
 		engine->unregister_singleton("RayTracerServer");
 		memdelete(server);

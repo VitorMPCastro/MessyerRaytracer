@@ -43,8 +43,6 @@
 #include <godot_cpp/variant/typed_array.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 
-#include "gpu/gpu_structs.h"
-
 #include <vector>
 #include <cstdint>
 

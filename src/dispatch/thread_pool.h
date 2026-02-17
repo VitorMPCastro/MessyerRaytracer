@@ -14,6 +14,11 @@
 //   std::async creates/destroys threads per call — too much overhead for per-frame ray batches.
 //   OpenMP requires compiler flags and isn't always available with MSVC + SCons.
 //   A persistent thread pool amortizes thread creation across the entire application lifetime.
+//
+// THREAD SAFETY:
+//   NOT thread-safe for concurrent dispatch_and_wait() calls.
+//   Only ONE thread may call dispatch_and_wait() at a time (the Godot main thread).
+//   Worker threads are internal and never call public methods.
 
 #include <vector>
 #include <thread>
@@ -27,8 +32,9 @@
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include "core/asserts.h"
+#include "api/thread_dispatch.h"
 
-class ThreadPool {
+class ThreadPool : public IThreadDispatch {
 public:
 	// Create a thread pool with 'num_threads' workers.
 	// 0 = auto-detect (hardware_concurrency - 1, minimum 1).
@@ -69,7 +75,9 @@ public:
 	//
 	// If count <= min_batch_size, runs on calling thread (no threading overhead).
 	void dispatch_and_wait(int count, int min_batch_size,
-			const std::function<void(int, int)> &func) {
+			const std::function<void(int, int)> &func) override {
+		RT_ASSERT(count >= 0, "dispatch_and_wait: count must be non-negative");
+		RT_ASSERT(min_batch_size > 0, "dispatch_and_wait: min_batch_size must be positive");
 		if (count <= 0) { return; }
 
 		// For small batches, don't bother with threading overhead.
@@ -82,16 +90,15 @@ public:
 		uint32_t num_chunks = thread_count_ + 1;
 		int chunk_size = (count + num_chunks - 1) / num_chunks;
 
-		// Reset completion counter
-		pending_chunks_.store(num_chunks - 1); // workers handle (num_chunks - 1) chunks
-
-		// Submit chunks to worker threads
+		// Submit work description + reset completion counter under the lock.
+		// pending_chunks_ is a CV predicate — MUST be written under mutex_ (Rule 10).
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			work_func_ = &func;
 			work_chunk_size_ = chunk_size;
 			work_total_ = count;
 			work_next_chunk_.store(1); // chunk 0 is for calling thread
+			pending_chunks_ = num_chunks - 1; // workers handle (num_chunks - 1) chunks
 			work_generation_++;
 		}
 		cv_work_.notify_all();
@@ -118,31 +125,50 @@ public:
 		{
 			std::unique_lock<std::mutex> lock(mutex_);
 			bool completed = cv_done_.wait_for(lock, std::chrono::seconds(30),
-					[this] { return pending_chunks_.load() == 0; });
+					[this] { return pending_chunks_ == 0; });
 			if (!completed) {
 				ERR_PRINT("[ThreadPool] WARNING: dispatch_and_wait timed out after 30s -- possible worker hang");
 			}
 		}
 	}
 
-	uint32_t thread_count() const { return thread_count_; }
+	uint32_t thread_count() const override { return thread_count_; }
 
 private:
-	std::vector<std::thread> workers_;
+	std::vector<std::thread> workers_;   // Owned. Joined in destructor.
 	uint32_t thread_count_ = 0;
 
-	std::mutex mutex_;
-	std::condition_variable cv_work_;
-	std::condition_variable cv_done_;
+	std::mutex mutex_;  // Protects: work_func_, work_chunk_size_, work_total_,
+	                    //           pending_chunks_, work_generation_, shutdown_.
+	                    // Lock ordering: always acquired before cv_work_ / cv_done_ waits.
+
+	std::condition_variable cv_work_;  // Predicate: work_generation_ > last_gen || shutdown_.
+	                                   // Guarded by: mutex_.
+	                                   // Notified by: dispatch_and_wait (new work) and destructor (shutdown).
+
+	std::condition_variable cv_done_;  // Predicate: pending_chunks_ == 0.
+	                                   // Guarded by: mutex_.
+	                                   // Notified by: last worker to complete its chunk(s).
 	bool shutdown_ = false;
 
 	// Work description (protected by mutex_)
 	const std::function<void(int, int)> *work_func_ = nullptr;
 	int work_chunk_size_ = 0;
 	int work_total_ = 0;
-	std::atomic<uint32_t> work_next_chunk_{0};
-	std::atomic<uint32_t> pending_chunks_{0};
-	uint64_t work_generation_ = 0;
+
+	std::atomic<uint32_t> work_next_chunk_{0};  // Lock-free chunk counter for work-stealing.
+	                                             // Not a CV predicate — safe without mutex_.
+	                                             // Workers atomically grab the next chunk index;
+	                                             // no CV waits on this value.
+
+	uint32_t pending_chunks_ = 0;  // Number of worker chunks not yet completed.
+	                                // CV predicate for cv_done_ — MUST be read/written under mutex_.
+	                                // WHY NOT atomic? An atomic store without the mutex causes
+	                                // lost cv_done_ notifications (Rule 10). Plain uint32_t
+	                                // under mutex is both correct and sufficient.
+
+	uint64_t work_generation_ = 0;  // Monotonic counter — incremented each dispatch.
+	                                 // CV predicate for cv_work_ — written under mutex_.
 
 	void _worker_loop() {
 		RT_ASSERT(thread_count_ > 0, "worker_loop: thread_count_ must be positive");
@@ -160,7 +186,10 @@ private:
 				last_gen = work_generation_;
 			}
 
-			// Grab chunks until none remain
+			// Grab chunks until none remain.
+			// work_next_chunk_ is atomic — multiple workers can grab concurrently
+			// without holding mutex_. This is safe because work_next_chunk_ is NOT
+			// a CV predicate (Rule 10 only requires mutex for CV predicates).
 			while (true) {
 				uint32_t chunk = work_next_chunk_.fetch_add(1);
 				int start = chunk * work_chunk_size_;
@@ -177,9 +206,17 @@ private:
 				}
 			}
 
-			// Signal completion
-			if (pending_chunks_.fetch_sub(1) == 1) {
-				cv_done_.notify_one();
+			// Signal completion — pending_chunks_ is a CV predicate, MUST be
+			// decremented under mutex_ so the waiter cannot miss the notification.
+			{
+				std::lock_guard<std::mutex> lock(mutex_);
+				RT_VERIFY(pending_chunks_ > 0,
+						"ThreadPool: pending_chunks_ underflow — more workers "
+						"completed than were dispatched");
+				pending_chunks_--;
+				if (pending_chunks_ == 0) {
+					cv_done_.notify_one();
+				}
 			}
 		}
 	}

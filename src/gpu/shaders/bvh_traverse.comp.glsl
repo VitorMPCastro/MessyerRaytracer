@@ -206,6 +206,21 @@ void main() {
     vec3 direction = rays[ray_idx].direction;
     float t_min    = rays[ray_idx].t_min;
     float t_max    = rays[ray_idx].t_max;
+
+    // ---- Early exit for degenerate rays (t_min >= t_max) ----
+    // Common for shadow rays from miss pixels (t_min = t_max = 0).
+    // Without this, the ray would traverse BVH nodes whose AABB contains
+    // the origin, wasting thousands of GPU iterations per degenerate ray.
+    if (t_min >= t_max) {
+        results[ray_idx].t          = t_max;
+        results[ray_idx].prim_id    = -1;
+        results[ray_idx].bary_u     = 0.0;
+        results[ray_idx].bary_v     = 0.0;
+        results[ray_idx].normal     = vec3(0.0);
+        results[ray_idx].hit_layers = 0u;
+        return;
+    }
+
     vec3 inv_dir   = safe_inv_direction(direction);
 
     // ---- Initialize result as "no hit" ----

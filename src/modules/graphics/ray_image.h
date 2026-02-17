@@ -35,6 +35,10 @@ using namespace godot;
 
 class RayImage {
 public:
+	RayImage() = default;
+	RayImage(const RayImage &) = delete;
+	RayImage &operator=(const RayImage &) = delete;
+
 	/// AOV channel identifiers. Each channel stores RGBA float data.
 	enum Channel {
 		COLOR       = 0,  ///< Shaded color (Lambert, etc.)
@@ -76,7 +80,9 @@ public:
 
 	/// Clear all channels to black (0, 0, 0, 0).
 	void clear() {
+		RT_ASSERT(pixel_count_ > 0, "clear: image not initialized");
 		for (int ch = 0; ch < CHANNEL_COUNT; ch++) {
+			RT_ASSERT(!channels_[ch].empty(), "clear: channel buffer not allocated");
 			std::memset(channels_[ch].data(), 0,
 				channels_[ch].size() * sizeof(float));
 		}
@@ -99,6 +105,8 @@ public:
 
 	/// Write a pixel to a channel. idx = y * width + x.
 	inline void write_pixel(Channel ch, int idx, float r, float g, float b, float a = 1.0f) {
+		RT_ASSERT_BOUNDS(idx, pixel_count_);
+		RT_ASSERT(ch >= 0 && ch < CHANNEL_COUNT, "write_pixel: invalid channel");
 		float *p = channels_[ch].data() + static_cast<ptrdiff_t>(idx) * 4;
 		p[0] = r;
 		p[1] = g;
@@ -108,6 +116,8 @@ public:
 
 	/// Write a pixel from a Color.
 	inline void write_pixel(Channel ch, int idx, const Color &c) {
+		RT_ASSERT_BOUNDS(idx, pixel_count_);
+		RT_ASSERT(ch >= 0 && ch < CHANNEL_COUNT, "write_pixel: invalid channel");
 		float *p = channels_[ch].data() + static_cast<ptrdiff_t>(idx) * 4;
 		p[0] = c.r;
 		p[1] = c.g;
