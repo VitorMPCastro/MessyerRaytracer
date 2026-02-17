@@ -115,8 +115,7 @@ def _load_file_suppressions(root: Path) -> dict[str, set[str]]:
 
     Format:
         [suppress]
-        src/modules/graphics/ray_scene_setup.h = godot-native/parallel-state-cpp
-        project/demos/rt_graphics_demo.gd = godot-native/scene-property-gd
+        src/modules/graphics/rt_compositor_base.cpp = module/boundary
     """
     conf = root / "tools" / "lint.conf"
     result: dict[str, set[str]] = {}
@@ -541,91 +540,6 @@ def check_godot_native_cpp(path: str, lines: list[str]) -> list[Violation]:
     return violations
 
 
-# ── GDScript detection ───────────────────────────────────────────────
-
-# GDScript patterns that bypass native Godot nodes by writing to
-# RaySceneSetup wrapper properties instead of configuring nodes directly.
-_GD_SCENE_PROPERTY_PATTERNS: list[tuple[re.Pattern, str]] = [
-    # scene_setup.sun_*  — should configure DirectionalLight3D directly
-    (re.compile(r"\bscene_setup\.(sun_\w+)\s*="),
-     "Set sun properties on DirectionalLight3D node directly, not via RaySceneSetup"),
-    # scene_setup.sky_*  — should configure WorldEnvironment directly
-    (re.compile(r"\bscene_setup\.(sky_\w+)\s*="),
-     "Set sky properties on WorldEnvironment/ProceduralSkyMaterial directly"),
-    # scene_setup.tonemap_*  — should configure Environment directly
-    (re.compile(r"\bscene_setup\.(tonemap_\w+)\s*="),
-     "Set tonemap properties on Environment resource directly"),
-    # scene_setup.ambient_*  — should configure Environment directly
-    (re.compile(r"\bscene_setup\.(ambient_\w+)\s*="),
-     "Set ambient properties on Environment resource directly"),
-    # scene_setup.ssao_* / ssil_* / ssr_* / glow_* / fog_*
-    (re.compile(r"\bscene_setup\.(ssr_\w+|ssao_\w+|ssil_\w+|glow_\w+|fog_\w+)\s*="),
-     "Set post-processing properties on Environment resource directly"),
-    # scene_setup.dof_* / auto_exposure_*
-    (re.compile(r"\bscene_setup\.(dof_\w+|auto_exposure_\w+)\s*="),
-     "Set camera attributes on CameraAttributesPractical directly"),
-    # Reading scene_setup.sky_energy etc. (read from actual node instead)
-    (re.compile(r"\bscene_setup\.(sun_energy|sky_energy|tonemap_mode|ambient_energy)\b(?!\s*=)"),
-     "Read this property from the actual Godot node, not RaySceneSetup"),
-]
-
-
-def check_godot_native_gdscript(path: str, lines: list[str]) -> list[Violation]:
-    """godot-native/scene-property-gd — GDScript setting scene properties via wrapper.
-
-    Detects GDScript code that sets sun/sky/environment/tonemap properties
-    through RaySceneSetup instead of configuring native Godot nodes directly.
-    """
-    if not path.endswith(".gd"):
-        return []
-
-    violations = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        # Skip comments.
-        if stripped.startswith("#"):
-            continue
-
-        for pat, msg in _GD_SCENE_PROPERTY_PATTERNS:
-            m = pat.search(line)
-            if m:
-                prop_name = m.group(1) if m.lastindex else "?"
-                violations.append(Violation(
-                    path, i + 1, "godot-native/scene-property-gd",
-                    f"'{prop_name}': {msg}"
-                ))
-
-    return violations
-
-
-# Detect GDScript code that accesses scene_setup.apply() which pushes
-# parallel state to nodes (the entire pattern we want to avoid).
-_GD_APPLY_RE = re.compile(r"\bscene_setup\.apply\(\)")
-
-def check_godot_native_gd_apply(path: str, lines: list[str]) -> list[Violation]:
-    """godot-native/apply-call-gd — scene_setup.apply() pushes parallel state.
-
-    The apply() pattern writes locally-stored values to Godot nodes.
-    Instead, configure Godot nodes directly — no apply() needed.
-    """
-    if not path.endswith(".gd"):
-        return []
-
-    violations = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        if _GD_APPLY_RE.search(line):
-            violations.append(Violation(
-                path, i + 1, "godot-native/apply-call-gd",
-                "scene_setup.apply() pushes parallel state — "
-                "configure Godot nodes directly instead",
-                severity="warning"
-            ))
-    return violations
-
-
 # ══════════════════════════════════════════════════════════════════════
 #  RULE REGISTRY
 # ══════════════════════════════════════════════════════════════════════
@@ -650,8 +564,6 @@ RULE_CHECKS: dict[str, list] = {
     ],
     "godot-native": [
         check_godot_native_cpp,
-        check_godot_native_gdscript,
-        check_godot_native_gd_apply,
     ],
 }
 

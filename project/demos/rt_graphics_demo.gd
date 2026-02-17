@@ -1,21 +1,20 @@
-# rt_graphics_demo.gd — RT Graphics demo: showcases RaySceneSetup + RayRenderer.
+# rt_graphics_demo.gd — RT Graphics demo: Cornell-box scene with RayRenderer.
 #
-# Demonstrates the full graphics pipeline from Phases 3-5:
-#   - RaySceneSetup managing environment, sky, sun, tonemapping, post-FX
+# Demonstrates the raytracer pipeline:
 #   - RayRenderer producing ray-traced AOV images
-#   - Quality presets (Low / Medium / High / Ultra)
-#   - SDFGI, SSAO, glow, fog toggling
-#   - Cornell-box inspired scene with varied materials
+#   - Standard Godot WorldEnvironment + DirectionalLight3D for scene lighting
+#   - Cornell-box inspired scene with varied PBR materials
 #
 # SCENE LAYOUT:
 #   Node3D (this script)
 #   ├── Camera3D
-#   ├── RaySceneSetup      (manages WorldEnvironment, DirectionalLight3D, Compositor)
-#   ├── RayRenderer         (traces rays → AOV channels → ImageTexture)
-#   ├── CanvasLayer         (display)
-#   │   ├── TextureRect     (rendered image)
-#   │   └── Label           (HUD)
-#   └── Scene geometry      (floor, walls, spheres, boxes)
+#   ├── DirectionalLight3D   (sun — read by raytracer per frame)
+#   ├── WorldEnvironment     (sky, ambient, tone mapping)
+#   ├── RayRenderer          (traces rays → AOV channels → ImageTexture)
+#   ├── CanvasLayer          (display)
+#   │   ├── TextureRect      (rendered image)
+#   │   └── Label            (HUD)
+#   └── Scene geometry       (floor, walls, spheres, boxes)
 #
 # CONTROLS:
 #   WASD / Arrow keys — Move camera
@@ -27,9 +26,9 @@
 #   B                 — Cycle backend (CPU/GPU/Auto)
 #   F                 — Toggle auto-render
 #   +/-               — Change resolution
-#   G                 — Cycle quality preset
-#   T                 — Toggle SSAO
-#   Y                 — Toggle glow
+#   L                 — Toggle shadows
+#   J                 — Toggle anti-aliasing
+#   H                 — Toggle render view
 #   F1                — Toggle keyboard hints
 #   ESC / P           — Settings menu
 
@@ -39,7 +38,6 @@ extends Node3D
 @onready var tex_rect: TextureRect = %RenderView
 @onready var hud_label: Label = %HUD
 var renderer  # RayRenderer
-var scene_setup  # RaySceneSetup
 var menu: BaseMenu
 var renderer_panel: RendererPanel
 var tooltip: TooltipOverlay
@@ -51,10 +49,6 @@ var pitch := 0.0
 var yaw := 0.0
 var mouse_captured := false
 
-# Scene setup state
-var current_preset := 1  # Start at MEDIUM
-var _preset_names := ["Low", "Medium", "High", "Ultra"]
-
 
 func _ready() -> void:
 	# ---- Camera ----
@@ -62,31 +56,11 @@ func _ready() -> void:
 	pitch = cam.rotation.x
 	yaw = cam.rotation.y
 
-	# ---- RaySceneSetup (manages environment, sun, compositor) ----
-	scene_setup = $RaySceneSetup
-	scene_setup.apply_preset(current_preset)
-
-	# Override some defaults for a nice demo look.
-	scene_setup.sun_energy = 1.2
-	scene_setup.sun_rotation_degrees = Vector3(-40.0, -25.0, 0.0)
-	scene_setup.tonemap_mode = 3  # ACES
-	scene_setup.tonemap_exposure = 1.1
-	scene_setup.ssao_enabled = true
-	scene_setup.ssao_intensity = 1.5
-	scene_setup.glow_enabled = true
-	scene_setup.glow_intensity = 0.6
-	scene_setup.sky_energy = 0.8
-	scene_setup.apply()
-
 	# ---- RayRenderer ----
 	renderer = $RayRenderer
 
 	# ---- Register meshes ----
-	var count := 0
-	for mesh_inst in _find_all_meshes(self):
-		var id := RayTracerServer.register_mesh(mesh_inst)
-		if id >= 0:
-			count += 1
+	RayTracerServer.register_scene(self)
 	RayTracerServer.build()
 
 	# ---- Pause menu ----
@@ -114,9 +88,6 @@ func _ready() -> void:
 		+ "+/- — Change resolution\n"
 		+ "L — Toggle shadows\n"
 		+ "J — Toggle anti-aliasing\n\n"
-		+ "G — Cycle quality preset\n"
-		+ "T — Toggle SSAO\n"
-		+ "Y — Toggle glow\n\n"
 		+ "ESC / P — Settings menu\n"
 		+ "F1 — Toggle this help"
 	)
@@ -127,24 +98,11 @@ func _ready() -> void:
 	mouse_captured = true
 
 	print("[RT Graphics Demo] Registered %d meshes, %d triangles" % [
-		count, RayTracerServer.get_triangle_count()])
-	print("  Preset: %s | SSAO: %s | Glow: %s" % [
-		_preset_names[current_preset],
-		"ON" if scene_setup.ssao_enabled else "OFF",
-		"ON" if scene_setup.glow_enabled else "OFF"])
-	print("  Controls: WASD=move, R=render, G=preset, T=SSAO, Y=glow, L=shadows, J=AA, F1=help")
+		RayTracerServer.get_mesh_count(), RayTracerServer.get_triangle_count()])
+	print("  Controls: WASD=move, R=render, L=shadows, J=AA, F1=help")
 
 	# Initial render
 	_do_render()
-
-
-func _find_all_meshes(root: Node) -> Array[MeshInstance3D]:
-	var result: Array[MeshInstance3D] = []
-	for child in root.get_children():
-		if child is MeshInstance3D:
-			result.append(child)
-		result.append_array(_find_all_meshes(child))
-	return result
 
 
 func _input(event: InputEvent) -> void:
@@ -189,12 +147,6 @@ func _input(event: InputEvent) -> void:
 				_change_resolution(1)
 			KEY_MINUS:
 				_change_resolution(-1)
-			KEY_G:
-				_cycle_preset()
-			KEY_T:
-				_toggle_ssao()
-			KEY_Y:
-				_toggle_glow()
 			KEY_1: renderer_panel.set_channel(0); _do_render()
 			KEY_2: renderer_panel.set_channel(1); _do_render()
 			KEY_3: renderer_panel.set_channel(2); _do_render()
@@ -238,28 +190,7 @@ func _do_render() -> void:
 	_update_hud()
 
 
-# ---- Scene setup controls ----
-
-func _cycle_preset() -> void:
-	current_preset = (current_preset + 1) % _preset_names.size()
-	scene_setup.apply_preset(current_preset)
-	print("Quality Preset: ", _preset_names[current_preset])
-	_do_render()
-
-
-func _toggle_ssao() -> void:
-	scene_setup.ssao_enabled = not scene_setup.ssao_enabled
-	scene_setup.apply()
-	print("SSAO: ", "ON" if scene_setup.ssao_enabled else "OFF")
-	_do_render()
-
-
-func _toggle_glow() -> void:
-	scene_setup.glow_enabled = not scene_setup.glow_enabled
-	scene_setup.apply()
-	print("Glow: ", "ON" if scene_setup.glow_enabled else "OFF")
-	_do_render()
-
+# ---- Channel / resolution / backend controls ----
 
 func _cycle_channel() -> void:
 	var names := renderer_panel._channel_names
@@ -292,10 +223,9 @@ func _update_hud() -> void:
 	var shadow: float = renderer.get_shadow_ms()
 	var shade: float = renderer.get_shade_ms()
 	var conv: float = renderer.get_convert_ms()
-	var preset: String = _preset_names[current_preset]
 	var aa_info := ""
 	if renderer.aa_enabled:
 		aa_info = "  AA:%d/%d" % [renderer.get_accumulation_count(), renderer.aa_max_samples]
-	hud_label.text = "%s  %dx%d  %.1fms (gen:%.1f trace:%.1f shd:%.1f shade:%.1f conv:%.1f)  [%s]%s" % [
-		ch, res.x, res.y, total, raygen, trace, shadow, shade, conv, preset, aa_info
+	hud_label.text = "%s  %dx%d  %.1fms (gen:%.1f trace:%.1f shd:%.1f shade:%.1f conv:%.1f)%s" % [
+		ch, res.x, res.y, total, raygen, trace, shadow, shade, conv, aa_info
 	]

@@ -128,6 +128,20 @@ public:
 	// Remove all registered meshes and clear acceleration structures.
 	void clear();
 
+	// ======== Scene auto-discovery ========
+
+	// Walk the subtree rooted at `root_node` and register every MeshInstance3D
+	// found.  Returns the number of newly registered meshes.  Previously
+	// registered meshes (matched by ObjectID) are skipped.
+	//
+	// Typical usage:
+	//   RayTracerServer.register_scene(get_tree().current_scene)
+	//   RayTracerServer.build()
+	//
+	// The manual register_mesh() / unregister_mesh() API still works for
+	// fine-grained control.
+	int register_scene(Node *root_node);
+
 	// ======== Ray casting (GDScript-callable) ========
 
 	// Cast a single ray, returning a Dictionary with hit info:

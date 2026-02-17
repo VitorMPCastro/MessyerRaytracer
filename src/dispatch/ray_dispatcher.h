@@ -386,6 +386,16 @@ public:
 	// Number of worker threads in the thread pool (excludes main thread).
 	uint32_t thread_count() const { return pool_.thread_count(); }
 
+	/// Access the thread pool as the abstract IThreadDispatch interface.
+	/// Used by IRayService::get_thread_dispatch() so modules share this pool
+	/// instead of creating their own.
+	IThreadDispatch &thread_pool() { return pool_; }
+
+	/// Access the GPU caster for shared RenderingDevice and buffer RIDs.
+	/// Used by IRayService bridge to expose GPU context to modules.
+	GPURayCaster &gpu_caster() { return gpu_caster_; }
+	const GPURayCaster &gpu_caster() const { return gpu_caster_; }
+
 private:
 	RayScene scene_;            // Flat scene for GPU staging (world-space triangles + BVH2)
 	SceneTLAS *tlas_ = nullptr; // Two-level BVH for CPU path (set by server)

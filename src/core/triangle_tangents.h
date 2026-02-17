@@ -14,6 +14,8 @@
 
 #include <godot_cpp/variant/vector3.hpp>
 
+#include "core/asserts.h"
+
 using godot::Vector3;
 
 struct TriangleTangents {

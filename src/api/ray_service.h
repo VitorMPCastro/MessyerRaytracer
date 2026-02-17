@@ -27,9 +27,9 @@
 
 #include "api/ray_query.h"
 #include "api/scene_shade_data.h"
-
-// Forward declare — definition in accel/ray_scene.h
-struct RayScene;
+#include "api/gpu_types.h"
+#include "api/gpu_context.h"
+#include "api/thread_dispatch.h"
 
 #include <godot_cpp/classes/node.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -111,6 +111,36 @@ public:
 	/// Get the number of CPU worker threads.
 	virtual int get_thread_count() const = 0;
 
+	// ======== Thread dispatch ========
+
+	/// Get the shared thread pool for parallel work dispatch.
+	/// Modules should use this instead of creating their own pool —
+	/// avoids double-subscribing CPU cores.
+	/// The returned pointer is valid for the lifetime of the IRayService.
+	virtual IThreadDispatch *get_thread_dispatch() = 0;
+
+	// ======== Async GPU dispatch ========
+
+	/// Submit rays for asynchronous GPU nearest-hit tracing.
+	/// Call collect_nearest() later to retrieve results.
+	/// Falls back to synchronous CPU dispatch if GPU is unavailable.
+	/// Ray sorting is applied transparently for large batches.
+	virtual void submit_async(const Ray *rays, int count) = 0;
+
+	/// Collect nearest-hit results from a prior submit_async() call.
+	/// Blocks until the GPU finishes.  Results are unshuffled automatically
+	/// if the submit call applied ray sorting.
+	virtual void collect_nearest(Intersection *results, int count) = 0;
+
+	/// Submit rays for asynchronous GPU any-hit tracing.
+	virtual void submit_async_any_hit(const Ray *rays, int count) = 0;
+
+	/// Collect any-hit results from a prior submit_async_any_hit() call.
+	virtual void collect_any_hit(bool *hit_results, int count) = 0;
+
+	/// Check if an async GPU dispatch is still in flight.
+	virtual bool has_async_pending() const = 0;
+
 	// ======== Scene shading data ========
 
 	/// Get a read-only view of the scene's material/UV data for shading.
@@ -119,10 +149,29 @@ public:
 
 	// ======== Scene data (for GPU upload) ========
 
-	/// Get a read-only reference to the underlying RayScene.
-	/// Used by CompositorEffects that need triangle/BVH data for GPU upload.
-	/// Valid after build(). The reference is stable until the next build().
-	virtual const RayScene *get_scene() const = 0;
+	/// Get pre-packed GPU scene data for compositor effects.
+	/// Returns triangle and BVH node buffers ready for GPU upload.
+	/// Valid after build(). Stable until the next build().
+	///
+	/// WHY NOT get_scene()?
+	///   Returning const RayScene* leaked accel/ types through the api/ layer,
+	///   forcing modules to include accel/ray_scene.h and gpu/gpu_structs.h.
+	///   GPUSceneUpload is defined in api/gpu_types.h — no accel/ dependency.
+	virtual GPUSceneUpload get_gpu_scene_data() const = 0;
+
+	// ======== GPU context (shared RenderingDevice) ========
+
+	/// Get the local RenderingDevice used for GPU ray tracing.
+	/// Returns nullptr if the GPU backend is not initialized.
+	/// The returned device is valid for the lifetime of the IRayService.
+	/// Modules must NOT free or shut down this device.
+	virtual godot::RenderingDevice *get_gpu_device() = 0;
+
+	/// Get RID handles to GPU-resident scene buffers (CWBVH, triangles).
+	/// Allows modules (e.g., GPUPathTracer) to bind existing BVH data into
+	/// their own descriptor sets — avoiding duplicate GPU uploads.
+	/// Valid after build(). RIDs are owned by the GPU caster.
+	virtual GPUSceneBufferRIDs get_gpu_scene_buffer_rids() const = 0;
 };
 
 /// Returns the global ray service backed by RayTracerServer.

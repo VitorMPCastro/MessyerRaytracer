@@ -57,13 +57,8 @@ script = ExtResource("1_script")
 transform = Transform3D(1, 0, 0, 0, 0.97437, 0.22495, 0, -0.22495, 0.97437, 0, 2.0, 5)
 fov = 65.0
 
-[node name="RaySceneSetup" type="RaySceneSetup" parent="."]
-gi_mode = 1
-tonemap_mode = 3
-voxel_gi_subdiv = 2
-voxel_gi_extents = Vector3(5, 4, 5)
-voxel_gi_interior = true
-voxel_gi_two_bounces = true
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.70710677, 0.29883623, -0.6408563, 0, 0.90630776, 0.42261827, 0.70710677, -0.29883623, 0.6408563, 0, 0, 0)
 
 [node name="RayRenderer" type="RayRenderer" parent="."]
 camera_path = NodePath("../Camera3D")

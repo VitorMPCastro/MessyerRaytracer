@@ -2,6 +2,7 @@
 
 #include "modules/graphics/ray_renderer.h"
 #include "modules/graphics/shade_pass.h"
+#include "modules/graphics/cpu_path_tracer.h"
 #include "api/ray_service.h"
 #include "api/thread_dispatch.h"
 #include "core/asserts.h"
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cstring>
+#include <atomic>
 
 using namespace godot;
 
@@ -22,8 +24,7 @@ using namespace godot;
 // Lifecycle
 // ============================================================================
 
-RayRenderer::RayRenderer()
-	: pool_(create_thread_dispatch()) {}
+RayRenderer::RayRenderer() = default;
 RayRenderer::~RayRenderer() = default;
 
 // ============================================================================
@@ -73,6 +74,16 @@ void RayRenderer::set_aa_max_samples(int max_samples) {
 }
 int RayRenderer::get_aa_max_samples() const { return aa_max_samples_; }
 
+void RayRenderer::set_max_bounces(int bounces) {
+	max_bounces_ = std::max(0, std::min(bounces, 32));
+}
+int RayRenderer::get_max_bounces() const { return max_bounces_; }
+
+void RayRenderer::set_path_tracing_enabled(bool enabled) {
+	path_tracing_enabled_ = enabled;
+}
+bool RayRenderer::get_path_tracing_enabled() const { return path_tracing_enabled_; }
+
 int RayRenderer::get_accumulation_count() const { return accum_count_; }
 void RayRenderer::reset_accumulation() { accum_count_ = 0; }
 
@@ -103,7 +114,6 @@ Ref<Image> RayRenderer::get_image() const {
 
 void RayRenderer::render_frame() {
 	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive");
-	RT_ASSERT_NOT_NULL(pool_.get());
 
 	using Clock = std::chrono::high_resolution_clock;
 	auto t_start = Clock::now();
@@ -113,6 +123,12 @@ void RayRenderer::render_frame() {
 	if (!svc) {
 		ERR_FAIL_MSG("RayRenderer: RayTracerServer not available.");
 	}
+
+	// Resolve shared thread pool (lazy — service may not be ready at construction).
+	if (!pool_) {
+		pool_ = svc->get_thread_dispatch();
+	}
+	RT_ASSERT_NOT_NULL(pool_);
 
 	Camera3D *cam = _resolve_camera();
 	if (!cam) {
@@ -139,17 +155,77 @@ void RayRenderer::render_frame() {
 	_generate_rays(cam);
 	auto t1 = Clock::now();
 
-	// 2. Trace primary rays
-	_trace_rays(svc);
-	auto t2 = Clock::now();
+	// 2-4. Trace + shade (path tracing or single-bounce depending on mode).
+	// Path tracing is only used for the COLOR channel — debug AOVs (Normal,
+	// Depth, Albedo, etc.) always use the fast single-bounce pipeline since
+	// they only need primary ray data.
+	bool use_path_trace = path_tracing_enabled_ &&
+		render_channel_ == static_cast<int>(CHANNEL_COLOR) &&
+		max_bounces_ > 0;
 
-	// 3. Trace shadow rays (per light, any-hit)
-	_trace_shadow_rays(svc, scene_lights);
-	auto t3 = Clock::now();
+	if (use_path_trace) {
+		// Lazy creation of the CPU path tracer (first frame only).
+		if (!path_tracer_) {
+			path_tracer_ = std::make_unique<CPUPathTracer>();
+		}
 
-	// 4. Shade all AOV channels (passes resolved scene nodes for Godot-native reads)
-	_shade_results(cam, scene_lights, world_env);
-	auto t4 = Clock::now();
+		// Build path trace params from scene node reads.
+		PathTraceParams pt_params;
+		pt_params.width  = resolution_.x;
+		pt_params.height = resolution_.y;
+		pt_params.max_bounces = max_bounces_;
+		pt_params.sample_index = static_cast<uint32_t>(accum_count_);
+		pt_params.shadows_enabled = shadows_enabled_;
+		pt_params.env   = _build_env_data(world_env);
+		pt_params.shade = svc->get_shade_data();
+		pt_params.lights = scene_lights;
+
+		// Camera data for GPU ray generation (Godot-Native: read from Camera3D).
+		{
+			Vector3 o = camera_.origin();
+			Basis b = camera_.basis();
+			Vector3 fwd = -b.get_column(2);
+			Vector3 rt  =  b.get_column(0);
+			Vector3 up  =  b.get_column(1);
+			pt_params.camera.origin[0]  = o.x;  pt_params.camera.origin[1]  = o.y;  pt_params.camera.origin[2]  = o.z;
+			pt_params.camera.forward[0] = fwd.x; pt_params.camera.forward[1] = fwd.y; pt_params.camera.forward[2] = fwd.z;
+			pt_params.camera.right[0]   = rt.x;  pt_params.camera.right[1]   = rt.y;  pt_params.camera.right[2]   = rt.z;
+			pt_params.camera.up[0]      = up.x;  pt_params.camera.up[1]      = up.y;  pt_params.camera.up[2]      = up.z;
+			pt_params.camera.fov_y_rad  = cam->get_fov() * (Math_PI / 180.0f);
+			pt_params.camera.aspect     = static_cast<float>(resolution_.x) / static_cast<float>(resolution_.y);
+			pt_params.camera.near_plane = cam->get_near();
+			pt_params.camera.far_plane  = cam->get_far();
+		}
+
+		// Framebuffer for the COLOR channel output.
+		framebuffer_.resize(resolution_.x, resolution_.y);
+		float *color_buf = framebuffer_.channel(RayImage::COLOR);
+
+		path_tracer_->trace_frame(pt_params, rays_.data(), color_buf, svc, pool_);
+
+		auto t4 = Clock::now();
+		// Combined timing — trace/shadow/shade are interleaved in the bounce loop.
+		trace_ms_  = std::chrono::duration<float, std::milli>(t4 - t1).count();
+		shadow_ms_ = 0.0f;
+		shade_ms_  = 0.0f;
+	} else {
+		// Single-bounce pipeline (debug AOVs and legacy mode).
+		_trace_rays(svc, true);
+		auto t2 = Clock::now();
+
+		_trace_shadow_rays(svc, scene_lights);
+		auto t3 = Clock::now();
+
+		_shade_results(cam, scene_lights, world_env);
+		auto t4 = Clock::now();
+
+		auto to_ms_inner = [](auto dur) {
+			return std::chrono::duration<float, std::milli>(dur).count();
+		};
+		trace_ms_  = to_ms_inner(t2 - t1);
+		shadow_ms_ = to_ms_inner(t3 - t2);
+		shade_ms_  = to_ms_inner(t4 - t3);
+	}
 
 	// 5. Accumulate (anti-aliasing temporal blend) and convert → Image → ImageTexture
 	_convert_output();
@@ -160,10 +236,9 @@ void RayRenderer::render_frame() {
 		return std::chrono::duration<float, std::milli>(dur).count();
 	};
 	raygen_ms_  = to_ms(t1 - t0);
-	trace_ms_   = to_ms(t2 - t1);
-	shadow_ms_  = to_ms(t3 - t2);
-	shade_ms_   = to_ms(t4 - t3);
-	convert_ms_ = to_ms(t5 - t4);
+	// trace_ms_, shadow_ms_, shade_ms_ already set in the branch above.
+	convert_ms_ = to_ms(t5 - t1) - trace_ms_ - shadow_ms_ - shade_ms_;
+	if (convert_ms_ < 0.0f) { convert_ms_ = 0.0f; }
 	total_ms_   = to_ms(t5 - t_start);
 
 	// ---- Stall detection: log per-phase breakdown when a frame is abnormally slow ----
@@ -443,7 +518,7 @@ void RayRenderer::_generate_rays(Camera3D *cam) {
 	}
 }
 
-void RayRenderer::_trace_rays(IRayService *svc) {
+void RayRenderer::_trace_rays(IRayService *svc, bool coherent) {
 	RT_ASSERT_NOT_NULL(svc);
 	RT_ASSERT(!rays_.empty(), "Ray buffer must not be empty before tracing");
 
@@ -453,8 +528,9 @@ void RayRenderer::_trace_rays(IRayService *svc) {
 	// Submit through the service interface — routes to CPU or GPU transparently.
 	// Primary camera rays are spatially coherent — adjacent pixels have nearby
 	// directions. Mark coherent=true to skip the expensive Morton-code sort on GPU.
+	// Bounce rays are incoherent — pass coherent=false for those.
 	RayQuery query = RayQuery::nearest(rays_.data(), count);
-	query.coherent = true;
+	query.coherent = coherent;
 	RayQueryResult result;
 	result.hits = hits_.data();
 
@@ -551,6 +627,86 @@ void RayRenderer::_trace_shadow_rays(IRayService *svc, const SceneLightData &lig
 	});
 }
 
+// ============================================================================
+// _build_env_data — extract EnvironmentData from WorldEnvironment
+// ============================================================================
+// Shared between _shade_results and _path_trace_frame to avoid duplication.
+// Reads sky gradient (ProceduralSkyMaterial), HDR panorama (PanoramaSkyMaterial),
+// tone mapping mode, and ambient light from the WorldEnvironment node.
+
+ShadePass::EnvironmentData RayRenderer::_build_env_data(WorldEnvironment *world_env) {
+	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive");
+	RT_ASSERT(is_inside_tree(), "_build_env_data called before node entered tree");
+
+	ShadePass::EnvironmentData env_data; // defaults: neutral sky, Reinhard, 0.15 ambient
+
+	if (!world_env) { return env_data; }
+
+	Ref<Environment> env_res = world_env->get_environment();
+	if (!env_res.is_valid()) { return env_data; }
+
+	// Tone mapping mode — match what the user configured in the editor.
+	env_data.tonemap_mode = static_cast<int>(env_res->get_tonemapper());
+
+	// Ambient light energy and color.
+	env_data.ambient_energy = env_res->get_ambient_light_energy();
+	Color amb_col = env_res->get_ambient_light_color();
+	env_data.ambient_r = amb_col.r;
+	env_data.ambient_g = amb_col.g;
+	env_data.ambient_b = amb_col.b;
+
+	// Sky material: ProceduralSkyMaterial (analytic gradient) or
+	// PanoramaSkyMaterial (HDR equirectangular map, Phase 1.4).
+	Ref<Sky> sky = env_res->get_sky();
+	if (!sky.is_valid()) { return env_data; }
+
+	Ref<Material> sky_mat_base = sky->get_material();
+
+	// Try ProceduralSkyMaterial first (analytic gradient).
+	ProceduralSkyMaterial *sky_mat = Object::cast_to<ProceduralSkyMaterial>(sky_mat_base.ptr());
+	if (sky_mat) {
+		Color top = sky_mat->get_sky_top_color();
+		Color horizon = sky_mat->get_sky_horizon_color();
+		Color ground = sky_mat->get_ground_bottom_color();
+		env_data.sky_zenith_r = top.r;    env_data.sky_zenith_g = top.g;    env_data.sky_zenith_b = top.b;
+		env_data.sky_horizon_r = horizon.r; env_data.sky_horizon_g = horizon.g; env_data.sky_horizon_b = horizon.b;
+		env_data.sky_ground_r = ground.r;  env_data.sky_ground_g = ground.g;  env_data.sky_ground_b = ground.b;
+		// Clear panorama — analytic sky takes priority when both are somehow set.
+		env_data.panorama_data = nullptr;
+	}
+
+	// Try PanoramaSkyMaterial (HDR equirectangular environment map).
+	PanoramaSkyMaterial *pano_mat = Object::cast_to<PanoramaSkyMaterial>(sky_mat_base.ptr());
+	if (pano_mat) {
+		Ref<Texture2D> pano_tex = pano_mat->get_panorama();
+		if (pano_tex.is_valid()) {
+			// Cache the RGBAF32 image — only re-fetch if the texture resource changed.
+			uint64_t tex_id = pano_tex->get_instance_id();
+			if (tex_id != cached_panorama_instance_id_ || cached_panorama_image_.is_null()) {
+				Ref<Image> img = pano_tex->get_image();
+				if (img.is_valid()) {
+					// Convert to RGBAF32 for fast raw-pointer sampling in the shade pass.
+					// This allocation happens only when the panorama changes — not per frame.
+					if (img->get_format() != Image::FORMAT_RGBAF) {
+						img->convert(Image::FORMAT_RGBAF);
+					}
+					cached_panorama_image_ = img;
+					cached_panorama_instance_id_ = tex_id;
+				}
+			}
+			// Pass raw float pointer to shade pass (no Godot headers needed there).
+			if (cached_panorama_image_.is_valid()) {
+				env_data.panorama_data = reinterpret_cast<const float *>(cached_panorama_image_->ptr());
+				env_data.panorama_width = cached_panorama_image_->get_width();
+				env_data.panorama_height = cached_panorama_image_->get_height();
+				env_data.panorama_energy = pano_mat->get_energy_multiplier();
+			}
+		}
+	}
+
+	return env_data;
+}
+
 void RayRenderer::_shade_results(Camera3D *cam, const SceneLightData &lights, WorldEnvironment *world_env) {
 	RT_ASSERT(!hits_.empty(), "Hits buffer must not be empty before shading");
 	RT_ASSERT(resolution_.x > 0 && resolution_.y > 0, "Resolution must be positive for shading");
@@ -583,70 +739,7 @@ void RayRenderer::_shade_results(Camera3D *cam, const SceneLightData &lights, Wo
 	// =========================================================================
 	// Godot-Native: read sky, ambient, tone mapping from WorldEnvironment
 	// =========================================================================
-	ShadePass::EnvironmentData env_data; // defaults: neutral sky, Reinhard, 0.15 ambient
-	if (world_env) {
-		Ref<Environment> env_res = world_env->get_environment();
-		if (env_res.is_valid()) {
-			// Tone mapping mode — match what the user configured in the editor.
-			env_data.tonemap_mode = static_cast<int>(env_res->get_tonemapper());
-
-			// Ambient light energy and color.
-			env_data.ambient_energy = env_res->get_ambient_light_energy();
-			Color amb_col = env_res->get_ambient_light_color();
-			env_data.ambient_r = amb_col.r;
-			env_data.ambient_g = amb_col.g;
-			env_data.ambient_b = amb_col.b;
-
-			// Sky material: ProceduralSkyMaterial (analytic gradient) or
-			// PanoramaSkyMaterial (HDR equirectangular map, Phase 1.4).
-			Ref<Sky> sky = env_res->get_sky();
-			if (sky.is_valid()) {
-				Ref<Material> sky_mat_base = sky->get_material();
-
-				// Try ProceduralSkyMaterial first (analytic gradient).
-				ProceduralSkyMaterial *sky_mat = Object::cast_to<ProceduralSkyMaterial>(sky_mat_base.ptr());
-				if (sky_mat) {
-					Color top = sky_mat->get_sky_top_color();
-					Color horizon = sky_mat->get_sky_horizon_color();
-					Color ground = sky_mat->get_ground_bottom_color();
-					env_data.sky_zenith_r = top.r;    env_data.sky_zenith_g = top.g;    env_data.sky_zenith_b = top.b;
-					env_data.sky_horizon_r = horizon.r; env_data.sky_horizon_g = horizon.g; env_data.sky_horizon_b = horizon.b;
-					env_data.sky_ground_r = ground.r;  env_data.sky_ground_g = ground.g;  env_data.sky_ground_b = ground.b;
-					// Clear panorama — analytic sky takes priority when both are somehow set.
-					env_data.panorama_data = nullptr;
-				}
-
-				// Try PanoramaSkyMaterial (HDR equirectangular environment map).
-				PanoramaSkyMaterial *pano_mat = Object::cast_to<PanoramaSkyMaterial>(sky_mat_base.ptr());
-				if (pano_mat) {
-					Ref<Texture2D> pano_tex = pano_mat->get_panorama();
-					if (pano_tex.is_valid()) {
-						// Cache the RGBAF32 image — only re-fetch if the texture resource changed.
-						uint64_t tex_id = pano_tex->get_instance_id();
-						if (tex_id != cached_panorama_instance_id_ || cached_panorama_image_.is_null()) {
-							Ref<Image> img = pano_tex->get_image();
-							if (img.is_valid()) {
-								// Convert to RGBAF32 for fast raw-pointer sampling in the shade pass.
-								// This allocation happens only when the panorama changes — not per frame.
-								if (img->get_format() != Image::FORMAT_RGBAF) {
-									img->convert(Image::FORMAT_RGBAF);
-								}
-								cached_panorama_image_ = img;
-								cached_panorama_instance_id_ = tex_id;
-							}
-						}
-						// Pass raw float pointer to shade pass (no Godot headers needed there).
-						if (cached_panorama_image_.is_valid()) {
-							env_data.panorama_data = reinterpret_cast<const float *>(cached_panorama_image_->ptr());
-							env_data.panorama_width = cached_panorama_image_->get_width();
-							env_data.panorama_height = cached_panorama_image_->get_height();
-							env_data.panorama_energy = pano_mat->get_energy_multiplier();
-						}
-					}
-				}
-			}
-		}
-	}
+	ShadePass::EnvironmentData env_data = _build_env_data(world_env);
 
 	// =========================================================================
 	// Godot-Native: derive depth_range from Camera3D near/far
@@ -825,6 +918,17 @@ void RayRenderer::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("get_accumulation_count"), &RayRenderer::get_accumulation_count);
 	ClassDB::bind_method(D_METHOD("reset_accumulation"), &RayRenderer::reset_accumulation);
+
+	// ---- Path tracing properties (Phase 3) ----
+	ClassDB::bind_method(D_METHOD("set_max_bounces", "bounces"), &RayRenderer::set_max_bounces);
+	ClassDB::bind_method(D_METHOD("get_max_bounces"), &RayRenderer::get_max_bounces);
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "max_bounces", PROPERTY_HINT_RANGE, "0,32,1"),
+		"set_max_bounces", "get_max_bounces");
+
+	ClassDB::bind_method(D_METHOD("set_path_tracing_enabled", "enabled"), &RayRenderer::set_path_tracing_enabled);
+	ClassDB::bind_method(D_METHOD("get_path_tracing_enabled"), &RayRenderer::get_path_tracing_enabled);
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "path_tracing_enabled"),
+		"set_path_tracing_enabled", "get_path_tracing_enabled");
 
 	// ---- Actions ----
 	ClassDB::bind_method(D_METHOD("render_frame"), &RayRenderer::render_frame);

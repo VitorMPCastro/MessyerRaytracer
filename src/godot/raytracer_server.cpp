@@ -53,6 +53,7 @@ void RayTracerServer::_bind_methods() {
 
 	// ---- Scene management ----
 	ClassDB::bind_method(D_METHOD("register_mesh", "mesh_instance"), &RayTracerServer::register_mesh);
+	ClassDB::bind_method(D_METHOD("register_scene", "root_node"), &RayTracerServer::register_scene);
 	ClassDB::bind_method(D_METHOD("unregister_mesh", "mesh_id"), &RayTracerServer::unregister_mesh);
 	ClassDB::bind_method(D_METHOD("build"), &RayTracerServer::build);
 	ClassDB::bind_method(D_METHOD("clear"), &RayTracerServer::clear);
@@ -187,6 +188,62 @@ void RayTracerServer::clear() {
 	scene_dirty_ = true;
 	RT_ASSERT(meshes_.empty(), "clear: meshes not emptied");
 	RT_ASSERT(scene_dirty_, "clear: scene_dirty must be true after clear");
+}
+
+// ============================================================================
+// Scene auto-discovery
+// ============================================================================
+
+// Walk a node subtree recursively and collect all MeshInstance3D nodes.
+static void _collect_mesh_instances(Node *node, TypedArray<Node> &out) {
+	RT_ASSERT_NOT_NULL(node);
+	if (Object::cast_to<MeshInstance3D>(node)) {
+		out.push_back(node);
+	}
+	const int child_count = node->get_child_count();
+	RT_ASSERT(child_count >= 0, "_collect_mesh_instances: negative child count");
+	for (int i = 0; i < child_count; i++) {
+		_collect_mesh_instances(node->get_child(i), out);
+	}
+}
+
+int RayTracerServer::register_scene(Node *root_node) {
+	ERR_FAIL_NULL_V_MSG(root_node, 0, "RayTracerServer::register_scene: root_node is null");
+	RT_ASSERT_NOT_NULL(root_node);
+
+	TypedArray<Node> meshes;
+	_collect_mesh_instances(root_node, meshes);
+
+	int registered = 0;
+	for (int i = 0; i < meshes.size(); i++) {
+		Node *node = Object::cast_to<Node>(meshes[i]);
+		if (!node) continue;
+
+		// Skip meshes already registered (matched by ObjectID).
+		uint64_t obj_id = static_cast<uint64_t>(node->get_instance_id());
+		bool already = false;
+		for (const auto &entry : meshes_) {
+			if (entry.valid && entry.node_id == obj_id) {
+				already = true;
+				break;
+			}
+		}
+		if (already) continue;
+
+		int id = register_mesh(node);
+		if (id >= 0) {
+			registered++;
+		}
+	}
+
+	RT_ASSERT(registered >= 0, "register_scene: registered count must be non-negative");
+
+	UtilityFunctions::print("[RayTracerServer] register_scene: registered ",
+		registered, " new meshes from subtree (total ",
+		get_mesh_count(), " meshes, ",
+		get_triangle_count(), " triangles)");
+
+	return registered;
 }
 
 // ============================================================================

@@ -1,17 +1,16 @@
-# gi_comparison_demo.gd — A/B comparison of GI modes: None, SDFGI, and VoxelGI.
+# gi_comparison_demo.gd — Cornell-box room for GI comparison.
 #
 # WHAT:  A room scene with objects that receive indirect illumination.
-#        Cycles through GI_NONE, GI_SDFGI, and GI_VOXEL_GI on RaySceneSetup
-#        so the user can compare rasterizer-side GI quality and our raytracer's
-#        rendering of the same geometry side-by-side.
-# WHY:   Validates the VoxelGI hybrid auto-create/bake implementation.
-#        Shows how GI mode affects Godot's viewport (rasterizer) while our
-#        raytracer reads lights and environment per-frame regardless of GI mode.
+#        Toggles SDFGI on the Environment so the user can compare
+#        rasterizer-side GI quality with our raytracer's rendering.
+# WHY:   Shows how our raytracer reads lights and environment per-frame
+#        regardless of rasterizer GI mode.
 #
 # SCENE LAYOUT:
 #   Node3D (this script)
 #   ├── Camera3D
-#   ├── RaySceneSetup       (manages WorldEnvironment, sun, GI)
+#   ├── DirectionalLight3D   (sun — read by raytracer per frame)
+#   ├── WorldEnvironment     (sky, ambient, tone mapping)
 #   ├── RayRenderer          (traces rays → AOV channels → ImageTexture)
 #   ├── Display (CanvasLayer)
 #   │   ├── %RenderView      (TextureRect — rendered image)
@@ -26,7 +25,7 @@
 #   WASD / Arrow keys — Move camera
 #   Mouse             — Look around (click to capture)
 #   Q / E             — Move down / up
-#   G                 — Cycle GI mode (None → SDFGI → VoxelGI → …)
+#   G                 — Toggle SDFGI
 #   TAB               — Cycle render channel
 #   R                 — Render single frame
 #   B                 — Cycle backend (CPU/GPU/Auto)
@@ -44,13 +43,9 @@ extends Node3D
 @onready var tex_rect: TextureRect = %RenderView
 @onready var hud_label: Label = %HUD
 var renderer  # RayRenderer
-var scene_setup  # RaySceneSetup
 var menu: BaseMenu
 var renderer_panel: RendererPanel
 var tooltip: TooltipOverlay
-
-# GI mode names for display.
-const GI_MODE_NAMES := ["None", "SDFGI", "VoxelGI"]
 
 # Movement.
 var move_speed := 5.0
@@ -67,14 +62,9 @@ func _ready() -> void:
 
 	# ---- Nodes ----
 	renderer = $RayRenderer
-	scene_setup = $RaySceneSetup
 
 	# ---- Register meshes ----
-	var count := 0
-	for mesh_inst in _find_all_meshes(self):
-		var id := RayTracerServer.register_mesh(mesh_inst)
-		if id >= 0:
-			count += 1
+	RayTracerServer.register_scene(self)
 	RayTracerServer.build()
 
 	# ---- Pause menu ----
@@ -90,9 +80,8 @@ func _ready() -> void:
 	tooltip = preload("res://demos/ui/tooltip_overlay.tscn").instantiate()
 	tooltip.hint_text = (
 		"[GI Comparison Demo]\n"
-		+ "A/B comparison of GI modes on rasterizer\n"
-		+ "Raytracer reads lights per-frame regardless\n\n"
-		+ "G — Cycle GI mode (None / SDFGI / VoxelGI)\n"
+		+ "Cornell box room — raytracer reads scene per-frame\n\n"
+		+ "G — Toggle SDFGI\n"
 		+ "WASD / Arrows — Move camera\n"
 		+ "Mouse — Look around\n"
 		+ "Q / E — Down / Up\n\n"
@@ -114,21 +103,14 @@ func _ready() -> void:
 	mouse_captured = true
 
 	print("[GIComparisonDemo] Registered %d meshes, %d triangles" % [
-		count, RayTracerServer.get_triangle_count()])
-	print("  GI mode: %s (press G to cycle)" % GI_MODE_NAMES[scene_setup.gi_mode])
-	print("  Controls: WASD=move, G=cycle GI, TAB=channel, R=render, F1=help")
+		RayTracerServer.get_mesh_count(), RayTracerServer.get_triangle_count()])
+	var env := $WorldEnvironment.environment as Environment
+	var sdfgi_on := env.sdfgi_enabled if env else false
+	print("  SDFGI: %s (press G to toggle)" % ("ON" if sdfgi_on else "OFF"))
+	print("  Controls: WASD=move, G=toggle SDFGI, TAB=channel, R=render, F1=help")
 
 	# Initial render.
 	_do_render()
-
-
-func _find_all_meshes(root: Node) -> Array[MeshInstance3D]:
-	var result: Array[MeshInstance3D] = []
-	for child in root.get_children():
-		if child is MeshInstance3D:
-			result.append(child)
-		result.append_array(_find_all_meshes(child))
-	return result
 
 
 func _input(event: InputEvent) -> void:
@@ -149,7 +131,7 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_G:
-				_cycle_gi_mode()
+				_toggle_sdfgi()
 			KEY_TAB:
 				_cycle_channel()
 			KEY_R:
@@ -208,12 +190,12 @@ func _do_render() -> void:
 	_update_hud()
 
 
-func _cycle_gi_mode() -> void:
-	# Cycle: 0 (None) → 1 (SDFGI) → 2 (VoxelGI) → 0 …
-	var next_mode: int = (scene_setup.gi_mode + 1) % 3
-	scene_setup.gi_mode = next_mode
-	scene_setup.apply()
-	print("[GIComparisonDemo] GI mode → %s" % GI_MODE_NAMES[next_mode])
+func _toggle_sdfgi() -> void:
+	var env := $WorldEnvironment.environment as Environment
+	if not env:
+		return
+	env.sdfgi_enabled = not env.sdfgi_enabled
+	print("[GIComparisonDemo] SDFGI → %s" % ("ON" if env.sdfgi_enabled else "OFF"))
 	_do_render()
 
 
@@ -246,9 +228,10 @@ func _update_hud() -> void:
 	var trace: float = renderer.get_trace_ms()
 	var shadow: float = renderer.get_shadow_ms()
 	var shade: float = renderer.get_shade_ms()
-	var gi_name: String = GI_MODE_NAMES[scene_setup.gi_mode]
+	var env := $WorldEnvironment.environment as Environment
+	var sdfgi_label := "ON" if (env and env.sdfgi_enabled) else "OFF"
 	var aa_info := ""
 	if renderer.aa_enabled:
 		aa_info = "  AA:%d/%d" % [renderer.get_accumulation_count(), renderer.aa_max_samples]
-	hud_label.text = "[GI:%s]  %s  %dx%d  %.1fms (trace:%.1f shadow:%.1f shade:%.1f)%s" % [
-		gi_name, ch, res.x, res.y, total, trace, shadow, shade, aa_info]
+	hud_label.text = "[SDFGI:%s]  %s  %dx%d  %.1fms (trace:%.1f shadow:%.1f shade:%.1f)%s" % [
+		sdfgi_label, ch, res.x, res.y, total, trace, shadow, shade, aa_info]

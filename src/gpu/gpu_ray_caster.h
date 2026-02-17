@@ -114,6 +114,27 @@ public:
 	// Safe to call multiple times.
 	void cleanup();
 
+	// ---- Shared access (for GPUPathTracer via IRayService bridge) ----
+
+	/// Get the local RenderingDevice. Returns nullptr if not initialized.
+	/// Caller must not free or shut down this device.
+	godot::RenderingDevice *get_rendering_device() const { return rd_; }
+
+	/// Get the CWBVH node buffer RID. Invalid if CWBVH not uploaded.
+	godot::RID get_cwbvh_node_buffer() const { return cwbvh_node_buffer_; }
+
+	/// Get the CWBVH triangle buffer RID. Invalid if CWBVH not uploaded.
+	godot::RID get_cwbvh_tri_buffer() const { return cwbvh_tri_buffer_; }
+
+	/// Get the scene triangle buffer (GPUTrianglePacked). Invalid if scene not uploaded.
+	godot::RID get_scene_tri_buffer() const { return triangle_buffer_; }
+
+	/// True if CWBVH data has been uploaded to GPU.
+	bool is_cwbvh_uploaded() const { return cwbvh_uploaded_; }
+
+	/// True if scene data has been uploaded to GPU (Aila-Laine BVH2 path).
+	bool is_scene_uploaded() const { return scene_uploaded_; }
+
 private:
 	// ---- Godot rendering device (owned) ----
 	godot::RenderingDevice *rd_ = nullptr;

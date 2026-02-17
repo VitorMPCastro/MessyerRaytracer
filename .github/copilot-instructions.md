@@ -142,6 +142,31 @@ src/
 
 **Modules only include `api/` and `core/`** — never server internals.
 
+```
+✅  #include "api/ray_service.h"
+✅  #include "api/path_tracer.h"
+✅  #include "api/gpu_types.h"
+❌  #include "raytracer_server.h"     // NEVER — breaks decoupling
+❌  #include "accel/bvh.h"            // NEVER — internal implementation
+❌  #include "accel/ray_scene.h"      // NEVER — use get_gpu_scene_data() instead
+❌  #include "dispatch/thread_pool.h"  // NEVER — use get_thread_dispatch() instead
+❌  #include "gpu/gpu_structs.h"      // NEVER — use api/gpu_types.h instead
+```
+
+### API Layer Conventions:
+1. **Shared thread pool** — `IRayService::get_thread_dispatch()`. Never create your own `ThreadPool`.
+2. **GPU scene data** — `IRayService::get_gpu_scene_data()` returns `GPUSceneUpload` (opaque packed buffers).
+3. **Async GPU dispatch** — `submit_async()` / `collect_nearest()` for CPU/GPU overlap.
+4. **Path tracing** — `IPathTracer` abstracts multi-bounce tracing. `RayRenderer` owns one (currently `CPUPathTracer`). A future GPU path tracer implements the same interface.
+
+```cpp
+// ✅ GOOD — use shared pool from service
+IThreadDispatch *pool = svc->get_thread_dispatch();
+
+// ❌ BAD — wastes CPU cores
+auto pool = create_thread_dispatch();
+```
+
 ## Rule 5: File Convention
 
 Every `.h` file starts with:
@@ -177,7 +202,7 @@ Use assertions + return values. No `throw`, no `try/catch`.
 - Use modular UI: `base_menu.tscn` + panels (`renderer_panel`, `debug_panel`, `layer_panel`)
 - GDScript header: `# feature_demo.gd — summary` + WHAT/WHY/SCENE LAYOUT/CONTROLS
 - Standard FPS camera controls (WASD, mouse, Q/E, TAB, R, B, F, +/-, L, J, ESC/P, F1)
-- Register meshes in `_ready()` via `_find_all_meshes()` → `RayTracerServer.register_mesh()` → `build()`
+- Register meshes in `_ready()` via `RayTracerServer.register_scene(self)` → `build()`
 - Print load summary: `[DemoName] Registered N meshes, M triangles`
 
 ### File naming:
@@ -315,3 +340,5 @@ Before generating ANY code, ask yourself:
 8. Does this struct contain TinyBVH types? → Make it non-copyable, use `unique_ptr` in containers
 9. Am I mutating a CV predicate without holding the waiter's mutex? → Fix it (Rule 11)
 10. Does every mutex, CV, atomic, and owning pointer have an invariant comment? → Add them (Rule 12)
+11. Am I creating a new ThreadPool or IThreadDispatch? → Use `svc->get_thread_dispatch()` instead
+12. Am I accessing RayScene or BVH types from a module? → Use `svc->get_gpu_scene_data()` instead

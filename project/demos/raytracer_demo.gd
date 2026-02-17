@@ -49,11 +49,7 @@ func _ready() -> void:
 	yaw = cam.rotation.y
 
 	# ---- Register every MeshInstance3D in the entire scene ----
-	var count := 0
-	for mesh_inst in _find_all_meshes(self):
-		var id := RayTracerServer.register_mesh(mesh_inst)
-		if id >= 0:
-			count += 1
+	RayTracerServer.register_scene(self)
 	RayTracerServer.build()
 
 	# ---- Pause menu (modular) ----
@@ -73,18 +69,9 @@ func _ready() -> void:
 	Input.set_mouse_mode(Input.MOUSE_MODE_CAPTURED)
 	mouse_captured = true
 
-	print("[ServerDemo] Registered %d meshes, %d triangles" % [count, RayTracerServer.get_triangle_count()])
+	print("[ServerDemo] Registered %d meshes, %d triangles" % [RayTracerServer.get_mesh_count(), RayTracerServer.get_triangle_count()])
 	print("Controls: WASD=move, Mouse=look, SPACE=cast rays, TAB=cycle mode, C=clear")
 	print("          ESC / P = settings menu")
-
-
-func _find_all_meshes(root: Node) -> Array[MeshInstance3D]:
-	var result: Array[MeshInstance3D] = []
-	for child in root.get_children():
-		if child is MeshInstance3D:
-			result.append(child)
-		result.append_array(_find_all_meshes(child))
-	return result
 
 
 func _input(event: InputEvent) -> void:

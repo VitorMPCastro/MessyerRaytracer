@@ -91,7 +91,6 @@ graph TB
             RTReflect --> RTBase
         end
         subgraph Graphics["Graphics Module"]
-            SceneSetup["RaySceneSetup<br/>Environment · Sky · GI · Post-FX<br/>Quality Presets (LOW→ULTRA)"]
             Renderer["RayRenderer<br/>CPU debug pipeline<br/>11 AOV channels"]
             ImageBuf["RayImage<br/>Float pixel buffer"]
         end
@@ -156,7 +155,7 @@ graph LR
 | **GPU async dispatch** | ✅ | submit_async / collect pattern for CPU overlap |
 | **Any-hit queries** | ✅ | Early-exit traversal for shadow/occlusion |
 | **Debug overlay** | ✅ | H-key toggle, resolution selector (640→1920) |
-| **RaySceneSetup node** | ✅ | WorldEnvironment, DirectionalLight3D, GI, quality presets |
+| **register_scene() auto-discover** | ✅ | Walk subtree, register all MeshInstance3D nodes |
 | **RTCompositorBase** | ✅ | Shared device BVH upload, samplers, shader compiler, dispatch helpers |
 | **RTReflectionEffect** | ✅ | 4-pass pipeline: RT trace → spatial denoise → temporal accum → composite |
 
@@ -395,6 +394,49 @@ TinyBVH's CWBVH traversal (`traverse_cwbvh.cl`) uses:
 
 > **Goal**: Go from single-ray primary visibility to recursive path tracing
 > with proper light transport.
+>
+> **Status**: CPU iterative path tracer implemented (Phase 3.1).
+
+#### Phase 3.1 — CPU Iterative Path Tracing ✅
+
+Implemented as an iterative bounce loop via the `IPathTracer` interface. When `path_tracing_enabled`
+is true and the render channel is COLOR, `RayRenderer` delegates to `CPUPathTracer::trace_frame()`
+instead of the single-bounce pipeline.
+
+**Architecture:**
+- `IPathTracer` (abstract interface in `api/path_tracer.h`) — defines `trace_frame()` taking
+  `PathTraceParams`, primary rays, color output buffer, `IRayService`, and `IThreadDispatch`.
+- `CPUPathTracer` (in `modules/graphics/cpu_path_tracer.h`) — owns all internal bounce buffers
+  (hits, shadow rays, shadow mask, path states). Encapsulates the full bounce loop.
+- `RayRenderer` creates `CPUPathTracer` lazily on first path-traced frame and delegates.
+
+**Why `IPathTracer`?** — A future GPU wavefront path tracer (Phase 3.2) will implement the
+same interface, letting `RayRenderer` switch backends transparently at runtime.
+
+**New files:**
+- `api/path_tracer.h` — `IPathTracer` interface + `PathTraceParams` struct
+- `modules/graphics/cpu_path_tracer.h` — CPU implementation (owns bounce buffers)
+- `modules/graphics/path_state.h` — Per-pixel `PathState` (throughput, accumulated radiance, PCG32 RNG)
+- `modules/graphics/path_trace.h` — Pure functions: `extract_surface()`, `compute_direct_light()` (NEE),
+  `cosine_hemisphere_sample()`, `ggx_sample_half()`, `sample_bounce()` (probabilistic lobe selection)
+
+**Algorithm:**
+1. Generate primary rays (coherent, with AA jitter)
+2. For each bounce 0..`max_bounces` (default 4):
+   - Trace all active rays (coherent for bounce 0, incoherent for bounces 1+)
+   - Trace shadow rays for NEE (reuses existing multi-light shadow pipeline)
+   - Per pixel in parallel: miss→sky×throughput, hit→emission×throughput + NEE×throughput
+   - Sample bounce direction: probabilistic diffuse (cosine hemisphere) or specular (GGX)
+   - Update throughput with pre-cancelled BRDF/PDF weight
+   - Russian roulette after bounce 2 (survival = max(throughput), capped 0.95)
+   - Degenerate rays (t_min=t_max=0) for inactive pixels — BVH exits immediately
+3. Write accumulated radiance → tonemap → gamma → framebuffer
+
+**Properties exposed to GDScript:**
+- `max_bounces` (int, 0–32, default 4)
+- `path_tracing_enabled` (bool, default true)
+
+#### Phase 3.2 — GPU Wavefront Path Tracing (Future)
 
 ```mermaid
 graph LR
@@ -844,11 +886,13 @@ src/
 ├── modules/graphics/
 │   ├── rt_compositor_base.h/.cpp      # CompositorEffect base class
 │   ├── rt_reflection_effect.h/.cpp    # RT reflections (4-pass)
-│   ├── ray_scene_setup.h/.cpp         # Godot environment configurator
 │   ├── ray_renderer.h/.cpp            # CPU debug renderer (11 AOVs)
+│   ├── cpu_path_tracer.h              # CPU multi-bounce path tracer (IPathTracer impl)
 │   ├── ray_image.h/.cpp               # Float pixel buffer
 │   ├── ray_camera.h                   # Camera ray generation
 │   ├── shade_pass.h                   # Per-pixel shading functions
+│   ├── path_trace.h                   # Path tracing: NEE, bounce sampling
+│   ├── path_state.h                   # Per-pixel path state (throughput, RNG)
 │   └── texture_sampler.h              # CPU texture sampling
 ├── simd/
 │   ├── ray_packet.h             # 4-ray SIMD packet
@@ -860,6 +904,10 @@ src/
 ├── api/
 │   ├── ray_service.h            # IRayService interface
 │   ├── ray_query.h              # Ray query types
+│   ├── path_tracer.h            # IPathTracer interface + PathTraceParams
+│   ├── gpu_types.h              # GPU-compatible structs (GPUTrianglePacked, GPUBVHNodePacked, GPUSceneUpload)
+│   ├── thread_dispatch.h        # IThreadDispatch interface
+│   ├── light_data.h             # LightData + SceneLightData
 │   └── scene_shade_data.h       # Shade data view struct
 └── godot/
     ├── raytracer_server.h/.cpp  # Scene management + mesh extraction

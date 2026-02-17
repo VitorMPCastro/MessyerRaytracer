@@ -473,6 +473,190 @@ inline float compute_spot_attenuation(const Vector3 &light_to_point_dir,
 }
 
 // ========================================================================
+// SurfaceInfo — extracted material and geometric properties at a hit point
+// ========================================================================
+// Populated by extract_surface(), then passed to cook_torrance_multi_light()
+// and other shading functions.  Shared between the single-sample shading
+// pipeline (shade_material) and the path tracer (path_trace.h).
+
+struct SurfaceInfo {
+	Vector3 normal;        // Shading normal (smooth + normal map)
+	Vector3 position;      // Hit position
+	Vector3 view_dir;      // Normalized direction from hit toward camera/previous bounce
+	float n_dot_v;
+
+	float albedo_r, albedo_g, albedo_b;
+	float metallic;
+	float roughness;
+	float specular_scale;
+	float emit_r, emit_g, emit_b;
+
+	// F0: reflectance at normal incidence (blend of dielectric 0.04 and metal=albedo).
+	float f0_r, f0_g, f0_b;
+	// Diffuse component: albedo * (1 - metallic).  Metals have zero diffuse.
+	float diff_r, diff_g, diff_b;
+};
+
+// ========================================================================
+// extract_surface — pull all material/geometry data for a hit point
+// ========================================================================
+// Reads smooth normal, applies normal map perturbation, looks up material
+// properties from SceneShadeData, samples albedo texture, and computes F0
+// and diffuse albedo.  Returns a SurfaceInfo struct ready for lighting.
+//
+// Used by: shade_material() (single-sample), path_trace.h (multi-bounce).
+
+inline SurfaceInfo extract_surface(const Intersection &hit, const Ray &ray,
+		const SceneShadeData &shade_data) {
+	RT_ASSERT(hit.hit(), "extract_surface called on a miss");
+	RT_ASSERT(ray.direction.is_finite(), "extract_surface: ray direction must be finite");
+
+	SurfaceInfo s;
+	s.position = hit.position;
+	s.view_dir = (-ray.direction).normalized();
+
+	// Smooth normal (interpolated from per-vertex data, falls back to face normal).
+	s.normal = get_smooth_normal(hit, shade_data);
+
+	// Normal map perturbation (if the material has a normal texture + tangent data).
+	if (shade_data.material_ids &&
+			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
+		uint32_t mat_id = shade_data.material_ids[hit.prim_id];
+		if (mat_id < static_cast<uint32_t>(shade_data.material_count)) {
+			const MaterialData &mat = shade_data.materials[mat_id];
+			if (mat.has_normal_texture) {
+				s.normal = perturb_normal(s.normal, hit, shade_data, mat);
+			}
+		}
+	}
+
+	s.n_dot_v = std::max(s.normal.dot(s.view_dir), 0.001f);
+
+	// ---- Default material (gray Lambert) ----
+	s.albedo_r = 0.75f; s.albedo_g = 0.75f; s.albedo_b = 0.75f;
+	s.metallic = 0.0f;
+	s.roughness = 0.5f;
+	s.specular_scale = 0.5f;
+	s.emit_r = s.emit_g = s.emit_b = 0.0f;
+
+	// ---- Material lookup from SceneShadeData ----
+	if (shade_data.material_ids &&
+			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
+		uint32_t mat_id = shade_data.material_ids[hit.prim_id];
+		if (mat_id < static_cast<uint32_t>(shade_data.material_count)) {
+			const MaterialData &mat = shade_data.materials[mat_id];
+			s.albedo_r = mat.albedo.r;
+			s.albedo_g = mat.albedo.g;
+			s.albedo_b = mat.albedo.b;
+			s.metallic = mat.metallic;
+			s.roughness = std::max(mat.roughness, 0.04f); // clamp to avoid GGX singularity
+			s.specular_scale = mat.specular;
+
+			// Albedo texture sampling.
+			if (mat.has_albedo_texture && shade_data.triangle_uvs) {
+				const TriangleUV &tri_uv = shade_data.triangle_uvs[hit.prim_id];
+				Vector2 uv = tri_uv.interpolate(hit.u, hit.v);
+				Color tex = TextureSampler::sample_bilinear(
+						mat.albedo_texture.ptr(), uv.x, uv.y);
+				s.albedo_r *= tex.r;
+				s.albedo_g *= tex.g;
+				s.albedo_b *= tex.b;
+			}
+
+			// Emission.
+			if (mat.emission_energy > 0.0f) {
+				s.emit_r = mat.emission.r * mat.emission_energy;
+				s.emit_g = mat.emission.g * mat.emission_energy;
+				s.emit_b = mat.emission.b * mat.emission_energy;
+			}
+		}
+	}
+
+	// ---- F0: reflectance at normal incidence ----
+	float dielectric_f0 = 0.04f * s.specular_scale * 2.0f;
+	s.f0_r = dielectric_f0 * (1.0f - s.metallic) + s.albedo_r * s.metallic;
+	s.f0_g = dielectric_f0 * (1.0f - s.metallic) + s.albedo_g * s.metallic;
+	s.f0_b = dielectric_f0 * (1.0f - s.metallic) + s.albedo_b * s.metallic;
+
+	// ---- Diffuse albedo (metals have no diffuse) ----
+	s.diff_r = s.albedo_r * (1.0f - s.metallic);
+	s.diff_g = s.albedo_g * (1.0f - s.metallic);
+	s.diff_b = s.albedo_b * (1.0f - s.metallic);
+
+	return s;
+}
+
+// ========================================================================
+// cook_torrance_multi_light — shared direct illumination loop
+// ========================================================================
+// Evaluates Cook-Torrance BRDF against all lights in linear RGB.
+// No ambient, emission, tone mapping, or gamma — caller adds those.
+//
+// Used by: shade_material() (single-sample), path_trace.h (multi-bounce NEE).
+
+inline void cook_torrance_multi_light(const SurfaceInfo &surf,
+		const ShadowContext &shadows, int pixel_idx,
+		const SceneLightData &lights,
+		float &out_r, float &out_g, float &out_b) {
+	RT_ASSERT(surf.normal.is_finite(), "cook_torrance_multi_light: normal must be finite");
+	RT_ASSERT(pixel_idx >= 0, "cook_torrance_multi_light: pixel index must be non-negative");
+
+	out_r = out_g = out_b = 0.0f;
+
+	for (int li = 0; li < lights.light_count; li++) {
+		const LightData &ld = lights.lights[li];
+
+		Vector3 light_dir;
+		float atten = 1.0f;
+
+		if (ld.type == LightData::DIRECTIONAL) {
+			light_dir = ld.direction;
+		} else {
+			// Point or spot: compute direction and distance attenuation.
+			Vector3 to_light = ld.position - surf.position;
+			float dist = to_light.length();
+			if (dist < 1e-6f || dist > ld.range) { continue; }
+			light_dir = to_light / dist;
+			atten = compute_distance_attenuation(dist, ld.range, ld.attenuation);
+
+			if (ld.type == LightData::SPOT) {
+				atten *= compute_spot_attenuation(
+					-light_dir, ld.direction, ld.spot_angle, ld.spot_angle_attenuation);
+			}
+		}
+
+		if (atten < 1e-6f) { continue; }
+
+		float n_dot_l = surf.normal.dot(light_dir);
+		if (n_dot_l <= 0.0f) { continue; }
+		if (!shadows.is_lit(pixel_idx, li)) { continue; }
+
+		Vector3 h = (surf.view_dir + light_dir).normalized();
+		float n_dot_h = std::max(surf.normal.dot(h), 0.0f);
+		float v_dot_h = std::max(surf.view_dir.dot(h), 0.0f);
+
+		// Cook-Torrance specular BRDF.
+		float d_term = distribution_ggx(n_dot_h, surf.roughness);
+		float g_term = geometry_smith_ggx(surf.n_dot_v, n_dot_l, surf.roughness);
+		float fr = fresnel_schlick(v_dot_h, surf.f0_r);
+		float fg = fresnel_schlick(v_dot_h, surf.f0_g);
+		float fb = fresnel_schlick(v_dot_h, surf.f0_b);
+
+		float spec_denom = 4.0f * surf.n_dot_v * n_dot_l + 1e-7f;
+		float spec_scale = d_term * g_term / spec_denom;
+		float diff_scale = 1.0f / PI;
+
+		float lr = ld.color.x * atten;
+		float lg = ld.color.y * atten;
+		float lb = ld.color.z * atten;
+
+		out_r += (surf.diff_r * (1.0f - fr) * diff_scale + fr * spec_scale) * lr * n_dot_l;
+		out_g += (surf.diff_g * (1.0f - fg) * diff_scale + fg * spec_scale) * lg * n_dot_l;
+		out_b += (surf.diff_b * (1.0f - fb) * diff_scale + fb * spec_scale) * lb * n_dot_l;
+	}
+}
+
+// ========================================================================
 // PBR material shading — Cook-Torrance + multi-light + shadow + sky
 // ========================================================================
 
@@ -490,140 +674,12 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 		return;
 	}
 
-	// ---- Smooth shading normal ----
-	Vector3 n = get_smooth_normal(hit, shade_data);
-
-	// ---- Normal map perturbation (Phase 1) ----
-	// If the material has a normal map and tangent data is available,
-	// perturb the smooth normal using the TBN matrix + normal map sample.
-	if (shade_data.material_ids &&
-			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
-		uint32_t nmap_mat_id = shade_data.material_ids[hit.prim_id];
-		if (nmap_mat_id < static_cast<uint32_t>(shade_data.material_count)) {
-			const MaterialData &nmap_mat = shade_data.materials[nmap_mat_id];
-			if (nmap_mat.has_normal_texture) {
-				n = perturb_normal(n, hit, shade_data, nmap_mat);
-			}
-		}
-	}
-
-	// ---- View direction ----
-	Vector3 view_dir = (-ray.direction).normalized();
-	float n_dot_v = std::max(n.dot(view_dir), 0.001f);
-
-	// ---- Material lookup ----
-	float ar = 0.75f, ag = 0.75f, ab = 0.75f;
-	float metallic = 0.0f;
-	float roughness = 0.5f;
-	float specular_scale = 0.5f;
-	float emit_r = 0.0f, emit_g = 0.0f, emit_b = 0.0f;
-
-	if (shade_data.material_ids &&
-			hit.prim_id < static_cast<uint32_t>(shade_data.triangle_count)) {
-		uint32_t mat_id = shade_data.material_ids[hit.prim_id];
-		if (mat_id < static_cast<uint32_t>(shade_data.material_count)) {
-			const MaterialData &mat = shade_data.materials[mat_id];
-			ar = mat.albedo.r;
-			ag = mat.albedo.g;
-			ab = mat.albedo.b;
-			metallic = mat.metallic;
-			roughness = std::max(mat.roughness, 0.04f); // clamp to avoid singularity
-			specular_scale = mat.specular;
-
-			// Albedo texture sampling
-			if (mat.has_albedo_texture && shade_data.triangle_uvs) {
-				const TriangleUV &tri_uv = shade_data.triangle_uvs[hit.prim_id];
-				Vector2 uv = tri_uv.interpolate(hit.u, hit.v);
-				Color tex = TextureSampler::sample_bilinear(
-						mat.albedo_texture.ptr(), uv.x, uv.y);
-				ar *= tex.r;
-				ag *= tex.g;
-				ab *= tex.b;
-			}
-
-			// Emission
-			if (mat.emission_energy > 0.0f) {
-				emit_r = mat.emission.r * mat.emission_energy;
-				emit_g = mat.emission.g * mat.emission_energy;
-				emit_b = mat.emission.b * mat.emission_energy;
-			}
-		}
-	}
-
-	// ---- F0: reflectance at normal incidence ----
-	// For dielectrics: 0.04 * specular_scale.  For metals: albedo color.
-	float dielectric_f0 = 0.04f * specular_scale * 2.0f;
-	float f0_r = dielectric_f0 * (1.0f - metallic) + ar * metallic;
-	float f0_g = dielectric_f0 * (1.0f - metallic) + ag * metallic;
-	float f0_b = dielectric_f0 * (1.0f - metallic) + ab * metallic;
-
-	// ---- Diffuse albedo (metals have no diffuse) ----
-	float diff_r = ar * (1.0f - metallic);
-	float diff_g = ag * (1.0f - metallic);
-	float diff_b = ab * (1.0f - metallic);
+	// ---- Extract all material/geometry properties ----
+	SurfaceInfo surf = extract_surface(hit, ray, shade_data);
 
 	// ---- Multi-light direct illumination (Cook-Torrance) ----
-	float out_r = 0.0f, out_g = 0.0f, out_b = 0.0f;
-
-	for (int li = 0; li < lights.light_count; li++) {
-		const LightData &ld = lights.lights[li];
-
-		// Compute light direction and attenuation based on light type.
-		Vector3 light_dir;   // Normalized direction FROM surface TOWARD light
-		float atten = 1.0f;  // Combined distance + spot attenuation
-
-		if (ld.type == LightData::DIRECTIONAL) {
-			light_dir = ld.direction;
-		} else {
-			// Point or spot: compute direction and distance attenuation.
-			Vector3 hit_pos = hit.position;
-			Vector3 to_light = ld.position - hit_pos;
-			float dist = to_light.length();
-			if (dist < 1e-6f || dist > ld.range) { continue; }
-			light_dir = to_light / dist;
-			atten = compute_distance_attenuation(dist, ld.range, ld.attenuation);
-
-			// Spot cone attenuation (in addition to distance).
-			if (ld.type == LightData::SPOT) {
-				float spot_atten = compute_spot_attenuation(
-					-light_dir, ld.direction, ld.spot_angle, ld.spot_angle_attenuation);
-				atten *= spot_atten;
-			}
-		}
-
-		if (atten < 1e-6f) { continue; }
-
-		float n_dot_l = n.dot(light_dir);
-		if (n_dot_l <= 0.0f) { continue; }
-		if (!shadows.is_lit(idx, li)) { continue; }
-
-		Vector3 h = (view_dir + light_dir).normalized();
-		float n_dot_h = std::max(n.dot(h), 0.0f);
-		float v_dot_h = std::max(view_dir.dot(h), 0.0f);
-
-		// Cook-Torrance specular BRDF
-		float d_term = distribution_ggx(n_dot_h, roughness);
-		float g_term = geometry_smith_ggx(n_dot_v, n_dot_l, roughness);
-		float fr = fresnel_schlick(v_dot_h, f0_r);
-		float fg = fresnel_schlick(v_dot_h, f0_g);
-		float fb_val = fresnel_schlick(v_dot_h, f0_b);
-
-		float spec_denom = 4.0f * n_dot_v * n_dot_l + 1e-7f;
-		float spec_scale = d_term * g_term / spec_denom;
-
-		// Diffuse: Lambert BRDF = albedo / PI.  The rendering equation
-		// cosine factor (n_dot_l) is applied once in the final accumulation
-		// below — do NOT include it here, or it gets squared.
-		float diff_scale = 1.0f / PI;
-
-		float lr = ld.color.x * atten;
-		float lg = ld.color.y * atten;
-		float lb = ld.color.z * atten;
-
-		out_r += (diff_r * (1.0f - fr) * diff_scale + fr * spec_scale) * lr * n_dot_l;
-		out_g += (diff_g * (1.0f - fg) * diff_scale + fg * spec_scale) * lg * n_dot_l;
-		out_b += (diff_b * (1.0f - fb_val) * diff_scale + fb_val * spec_scale) * lb * n_dot_l;
-	}
+	float out_r, out_g, out_b;
+	cook_torrance_multi_light(surf, shadows, idx, lights, out_r, out_g, out_b);
 
 	// ---- Ambient / indirect approximation ----
 	// When an HDR panorama is available, sample it in the normal direction for
@@ -635,7 +691,7 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 	float amb_r, amb_g, amb_b;
 	if (env.panorama_data) {
 		float u, v;
-		direction_to_equirect_uv(n, u, v);
+		direction_to_equirect_uv(surf.normal, u, v);
 		sample_panorama(env.panorama_data, env.panorama_width, env.panorama_height,
 				u, v, amb_r, amb_g, amb_b);
 		amb_r *= env.panorama_energy;
@@ -644,22 +700,20 @@ inline void shade_material(RayImage &fb, int idx, const Intersection &hit,
 	} else {
 		// Hemisphere ambient from sky/ground colors (read from Environment).
 		// Up-facing surfaces get sky color, down-facing get ground bounce.
-		float sky_blend = n.y * 0.5f + 0.5f; // [0,1]: 0 = down, 1 = up
+		float sky_blend = surf.normal.y * 0.5f + 0.5f; // [0,1]: 0 = down, 1 = up
 		amb_r = env.sky_ground_r + (env.sky_zenith_r - env.sky_ground_r) * sky_blend;
 		amb_g = env.sky_ground_g + (env.sky_zenith_g - env.sky_ground_g) * sky_blend;
 		amb_b = env.sky_ground_b + (env.sky_zenith_b - env.sky_ground_b) * sky_blend;
 	}
 	// Tint by ambient light color and scale by ambient energy (from Environment).
-	float ambient_strength = env.ambient_energy;
-
-	out_r += diff_r * amb_r * env.ambient_r * ambient_strength;
-	out_g += diff_g * amb_g * env.ambient_g * ambient_strength;
-	out_b += diff_b * amb_b * env.ambient_b * ambient_strength;
+	out_r += surf.diff_r * amb_r * env.ambient_r * env.ambient_energy;
+	out_g += surf.diff_g * amb_g * env.ambient_g * env.ambient_energy;
+	out_b += surf.diff_b * amb_b * env.ambient_b * env.ambient_energy;
 
 	// ---- Emission ----
-	out_r += emit_r;
-	out_g += emit_g;
-	out_b += emit_b;
+	out_r += surf.emit_r;
+	out_g += surf.emit_g;
+	out_b += surf.emit_b;
 
 	// ---- Tone mapping (matches Environment.tonemapper setting) ----
 	tonemap_rgb(out_r, out_g, out_b, env.tonemap_mode);

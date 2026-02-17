@@ -12,25 +12,8 @@
 
 #include "api/gpu_types.h"
 
-// ============================================================================
-// GPU BVH Node — 32 bytes (standard format, used by rt_compositor_base)
-// ============================================================================
-//
-// GLSL layout:
-//   struct GPUBVHNode {
-//       vec3 bounds_min; uint left_first;  // offset  0–15
-//       vec3 bounds_max; uint count;       // offset 16–31
-//   };
-//
-// Encoding:
-//   count == 0: internal node. left_first = index of left child.
-//               Right child is at left_first + 1 (implicit DFS ordering).
-//   count >  0: leaf node. left_first = first triangle index. count = tri count.
-struct GPUBVHNodePacked {
-	float bounds_min[3]; uint32_t left_first;
-	float bounds_max[3]; uint32_t count;
-};
-static_assert(sizeof(GPUBVHNodePacked) == 32, "GPUBVHNodePacked must be 32 bytes (std430)");
+// NOTE: GPUBVHNodePacked (32 bytes, BVH2 format) is defined in api/gpu_types.h
+// alongside GPUSceneUpload so that modules can use it without depending on gpu/.
 
 // ============================================================================
 // GPU BVH Node — Aila-Laine format — 64 bytes

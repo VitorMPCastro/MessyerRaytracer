@@ -13,8 +13,7 @@
 //
 // USAGE:
 //   Attached to a Compositor resource, which is set on WorldEnvironment.
-//   RaySceneSetup handles this automatically when rt_reflections_enabled = true.
-//   Can also be created manually in GDScript:
+//   Created manually in GDScript or attached via Compositor in the editor:
 //     var effect = RTReflectionEffect.new()
 //     compositor.compositor_effects.append(effect)
 

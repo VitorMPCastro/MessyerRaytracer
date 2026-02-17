@@ -40,14 +40,16 @@
 
 #include "modules/graphics/ray_camera.h"
 #include "modules/graphics/ray_image.h"
+#include "modules/graphics/shade_pass.h"
 #include "core/intersection.h"
 #include "api/light_data.h"
 
-#include <memory>
 #include <vector>
+#include <memory>
 
 // Forward declare — we use the abstract dispatch interface from api/.
 class IThreadDispatch;
+class IPathTracer;
 
 using namespace godot;
 
@@ -105,6 +107,12 @@ public:
 	void set_aa_max_samples(int max_samples);
 	int get_aa_max_samples() const;
 
+	void set_max_bounces(int bounces);
+	int get_max_bounces() const;
+
+	void set_path_tracing_enabled(bool enabled);
+	bool get_path_tracing_enabled() const;
+
 	/// Number of frames accumulated so far in the AA buffer.
 	int get_accumulation_count() const;
 
@@ -148,6 +156,10 @@ private:
 	bool aa_enabled_       = true;
 	int aa_max_samples_    = 256;  // Stop accumulating after this many frames
 
+	// ---- Path tracing (Phase 3) ----
+	int max_bounces_            = 4;     // Maximum bounce depth for path tracing
+	bool path_tracing_enabled_  = true;  // Use multi-bounce path tracing for COLOR
+
 	// ---- Internal state ----
 	RayCamera camera_;
 	RayImage framebuffer_;
@@ -163,6 +175,10 @@ private:
 	Vector3 prev_cam_origin_;            // For detecting camera motion
 	Basis prev_cam_basis_;               // For detecting camera rotation
 
+	// ---- Path tracer (Phase 3 — multi-bounce CPU path tracing) ----
+	std::unique_ptr<IPathTracer> path_tracer_;  // Owned.  Created lazily on first path-traced frame.
+	                                             // Implements IPathTracer (currently CPUPathTracer).
+
 	// ---- Cached HDR panorama (Phase 1.4 — Environment Map) ----
 	// Converted to FORMAT_RGBAF once and cached. Re-fetched only when
 	// the panorama Texture2D resource changes (detected via instance ID comparison).
@@ -170,7 +186,7 @@ private:
 	uint64_t cached_panorama_instance_id_ = 0;   // ObjectID of the last-seen panorama Texture2D
 	Ref<ImageTexture> output_texture_;
 	Ref<Image> output_image_;  // Cached for zero-alloc parallel conversion
-	std::unique_ptr<IThreadDispatch> pool_;  // Parallel raygen / shade / convert
+	IThreadDispatch *pool_ = nullptr;  // Shared thread pool from IRayService (not owned)
 
 	// ---- Timing (ms) ----
 	float total_ms_    = 0.0f;
@@ -194,10 +210,15 @@ private:
 
 	// ---- Internal pipeline stages ----
 	void _generate_rays(Camera3D *cam);
-	void _trace_rays(IRayService *svc);
+	void _trace_rays(IRayService *svc, bool coherent = true);
 	void _trace_shadow_rays(IRayService *svc, const SceneLightData &lights);
 	void _shade_results(Camera3D *cam, const SceneLightData &lights, WorldEnvironment *world_env);
 	void _convert_output();
+
+	// ---- Path tracing (Phase 3) ----
+	/// Extract environment data from WorldEnvironment.  Shared between
+	/// _shade_results and path tracer to avoid code duplication.
+	ShadePass::EnvironmentData _build_env_data(WorldEnvironment *world_env);
 };
 
 VARIANT_ENUM_CAST(RayRenderer::RenderChannel);

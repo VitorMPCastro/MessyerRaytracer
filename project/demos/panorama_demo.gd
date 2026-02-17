@@ -73,11 +73,7 @@ func _ready() -> void:
 	renderer = $RayRenderer
 
 	# ---- Register meshes ----
-	var count := 0
-	for mesh_inst in _find_all_meshes(self):
-		var id := RayTracerServer.register_mesh(mesh_inst)
-		if id >= 0:
-			count += 1
+	RayTracerServer.register_scene(self)
 	RayTracerServer.build()
 
 	# ---- Pause menu ----
@@ -116,7 +112,7 @@ func _ready() -> void:
 	mouse_captured = true
 
 	print("[PanoramaDemo] Registered %d meshes, %d triangles" % [
-		count, RayTracerServer.get_triangle_count()])
+		RayTracerServer.get_mesh_count(), RayTracerServer.get_triangle_count()])
 	var sky_e := 1.0
 	if world_env and world_env.environment and world_env.environment.sky:
 		var mat = world_env.environment.sky.sky_material
@@ -128,15 +124,6 @@ func _ready() -> void:
 
 	# Initial render.
 	_do_render()
-
-
-func _find_all_meshes(root: Node) -> Array[MeshInstance3D]:
-	var result: Array[MeshInstance3D] = []
-	for child in root.get_children():
-		if child is MeshInstance3D:
-			result.append(child)
-		result.append_array(_find_all_meshes(child))
-	return result
 
 
 func _input(event: InputEvent) -> void:

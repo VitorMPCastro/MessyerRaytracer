@@ -112,8 +112,20 @@ shader_rt_composite = env.Command(
     embed_shader_action,
 )
 
+shader_pt_generate = env.Command(
+    "src/gpu/shaders/pt_generate.gen.h",
+    "src/gpu/shaders/pt_generate.comp.glsl",
+    embed_shader_action,
+)
+
+shader_pt_shade = env.Command(
+    "src/gpu/shaders/pt_shade.gen.h",
+    "src/gpu/shaders/pt_shade.comp.glsl",
+    embed_shader_action,
+)
+
 shader_headers = [shader_bvh, shader_cwbvh, shader_rt_reflections, shader_rt_denoise_spatial,
-                  shader_rt_denoise_temporal, shader_rt_composite]
+                  shader_rt_denoise_temporal, shader_rt_composite, shader_pt_generate, shader_pt_shade]
 
 sources = Glob("src/godot/*.cpp") + Glob("src/gpu/*.cpp") + Glob("src/dispatch/*.cpp") + Glob("src/modules/*/*.cpp") + Glob("src/accel/*.cpp")
 env.Depends(sources, shader_headers)

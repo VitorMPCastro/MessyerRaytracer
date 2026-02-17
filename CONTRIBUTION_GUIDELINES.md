@@ -439,14 +439,56 @@ Modules (graphics, audio, AI) never include server internals. They include only:
 
 - `api/ray_service.h` — the abstract `IRayService` interface
 - `api/ray_query.h` — query/result types
+- `api/path_tracer.h` — the abstract `IPathTracer` interface
+- `api/gpu_types.h` — GPU-compatible packed structs (`GPUTrianglePacked`, `GPUBVHNodePacked`, `GPUSceneUpload`)
+- `api/thread_dispatch.h` — the abstract `IThreadDispatch` interface
+- `api/light_data.h` — `LightData` + `SceneLightData`
+- `api/scene_shade_data.h` — shade data view
 - `core/*.h` — fundamental types (Ray, Intersection, Triangle)
 
 ```
 ✅  #include "api/ray_service.h"
+✅  #include "api/path_tracer.h"
+✅  #include "api/gpu_types.h"
 ❌  #include "raytracer_server.h"     // NEVER — breaks decoupling
 ❌  #include "accel/bvh.h"            // NEVER — internal implementation
-❌  #include "dispatch/thread_pool.h"  // NEVER — internal implementation
+❌  #include "accel/ray_scene.h"      // NEVER — use get_gpu_scene_data() instead
+❌  #include "dispatch/thread_pool.h"  // NEVER — use get_thread_dispatch() instead
+❌  #include "gpu/gpu_structs.h"      // NEVER — use api/gpu_types.h instead
 ```
+
+### API Layer Conventions
+
+The `api/` layer provides several key services beyond ray submission:
+
+1. **Shared thread pool** — `IRayService::get_thread_dispatch()` returns the server's thread pool.
+   Modules must NOT create their own `ThreadPool` — that would double-subscribe CPU cores.
+   ```cpp
+   IThreadDispatch *pool = svc->get_thread_dispatch();  // ✅ shared
+   auto pool = create_thread_dispatch();                 // ❌ wastes cores
+   ```
+
+2. **GPU scene data** — `IRayService::get_gpu_scene_data()` returns pre-packed buffers
+   for GPU upload via `GPUSceneUpload`. Modules never access `RayScene` or TinyBVH types.
+   ```cpp
+   GPUSceneUpload upload = svc->get_gpu_scene_data();  // ✅ opaque packed data
+   const RayScene &scene = svc->get_scene();            // ❌ leaks accel/ types
+   ```
+
+3. **Async GPU dispatch** — `submit_async()` / `collect_nearest()` for overlapping CPU
+   work with GPU computation. Also `submit_async_any_hit()` / `collect_any_hit()`.
+   ```cpp
+   svc->submit_async(rays, count);
+   /* ... do CPU work while GPU traces ... */
+   svc->collect_nearest(results, count);  // blocks until GPU done
+   ```
+
+4. **Path tracing** — `IPathTracer` abstracts the multi-bounce path tracing implementation.
+   `RayRenderer` owns an `IPathTracer` instance (currently `CPUPathTracer`).
+   A future GPU wavefront path tracer will implement the same interface.
+   ```cpp
+   path_tracer_->trace_frame(params, primary_rays, color_output, svc, pool);
+   ```
 
 ### Why?
 
@@ -869,7 +911,7 @@ Demo scenes live in `project/demos/` and serve two purposes: (1) regression-test
 
    Feature-specific keys are added per demo and documented in the tooltip.
 
-8. **Mesh registration in `_ready()`.** Walk the scene tree with `_find_all_meshes()`, register each with `RayTracerServer.register_mesh()`, then call `RayTracerServer.build()`.
+8. **Mesh registration in `_ready()`.** Call `RayTracerServer.register_scene(self)` to auto-discover all `MeshInstance3D` nodes in the subtree, then call `RayTracerServer.build()`.
 
 9. **Print a load summary.** `_ready()` prints registered mesh/triangle count and available controls:
    ```
@@ -945,7 +987,7 @@ src/
   dispatch/      # ThreadPool, RayDispatcher (CPU parallelism)
   gpu/           # GPU structs, GPURayCaster (Vulkan compute via local RD)
   modules/
-    graphics/    # CompositorEffect pipeline, RaySceneSetup
+    graphics/    # CompositorEffect pipeline, RayRenderer
   gen/           # Auto-generated (doc_data, etc.)
   register_types.cpp/.h  # GDExtension entry points
 ```

@@ -11,15 +11,6 @@
 #include <godot_cpp/core/class_db.hpp>
 
 #include "api/ray_service.h"
-// NOTE: gpu/gpu_structs.h and accel/ray_scene.h are included here despite the
-// module decoupling rule (modules should only include api/ and core/). This is
-// a justified exception: RTCompositorBase must upload BVH node data and triangle
-// data to the GPU, which requires direct access to the BVH data structures and
-// BVH-specific GPU node formats. Phase 2 (TinyBVH) will provide a cleaner
-// abstraction via IRayService::get_gpu_scene_data().
-#include "gpu/gpu_structs.h"
-#include "accel/ray_scene.h"
-#include "core/triangle.h"
 #include "core/asserts.h"
 
 #include <cstring>
@@ -199,80 +190,44 @@ void RTCompositorBase::upload_scene_to_shared_device() {
 	IRayService *svc = get_ray_service();
 	if (!svc) { return; }
 
-	const RayScene *scene_ptr = svc->get_scene();
-	if (!scene_ptr) { return; }
-	const RayScene &scene = *scene_ptr;
-	if (scene.triangles.empty() || !scene.built) { return; }
-
-	uint32_t tri_count = static_cast<uint32_t>(scene.triangles.size());
-	uint32_t node_count = static_cast<uint32_t>(scene.bvh2.NodeCount());
+	GPUSceneUpload scene_data = svc->get_gpu_scene_data();
+	if (!scene_data.valid) { return; }
 
 	// Only re-upload if scene has changed.
-	if (scene_uploaded_ && tri_count == uploaded_tri_count_ && node_count == uploaded_node_count_) {
+	if (scene_uploaded_ && scene_data.triangle_count == uploaded_tri_count_ && scene_data.bvh_node_count == uploaded_node_count_) {
 		return;
 	}
 
 	// Free old buffers.
 	free_scene_buffers();
 
-	// ---- Convert triangles to GPU format ----
-	std::vector<GPUTrianglePacked> gpu_tris(tri_count);
-	for (uint32_t i = 0; i < tri_count; i++) {
-		const Triangle &t = scene.triangles[i];
-		GPUTrianglePacked &g = gpu_tris[i];
-		g.v0[0] = t.v0.x; g.v0[1] = t.v0.y; g.v0[2] = t.v0.z;
-		g.id = t.id;
-		g.edge1[0] = t.edge1.x; g.edge1[1] = t.edge1.y; g.edge1[2] = t.edge1.z;
-		g.layers = t.layers;
-		g.edge2[0] = t.edge2.x; g.edge2[1] = t.edge2.y; g.edge2[2] = t.edge2.z;
-		g._pad2 = 0.0f;
-		g.normal[0] = t.normal.x; g.normal[1] = t.normal.y; g.normal[2] = t.normal.z;
-		g._pad3 = 0.0f;
-	}
-
-	// ---- Convert TinyBVH BVH2 nodes to GPU format ----
-	// TinyBVH BVH2 node layout (32 bytes):
-	//   bvhvec3 aabbMin; uint32_t leftFirst;
-	//   bvhvec3 aabbMax; uint32_t triCount;
-	// This maps directly to GPUBVHNodePacked (same semantic, same 32 bytes).
-	const tinybvh::BVH::BVHNode *nodes = scene.bvh2.bvhNode;
-	std::vector<GPUBVHNodePacked> gpu_nodes(node_count);
-	for (uint32_t i = 0; i < node_count; i++) {
-		const tinybvh::BVH::BVHNode &n = nodes[i];
-		GPUBVHNodePacked &g = gpu_nodes[i];
-		g.bounds_min[0] = n.aabbMin.x; g.bounds_min[1] = n.aabbMin.y; g.bounds_min[2] = n.aabbMin.z;
-		g.left_first = n.leftFirst;
-		g.bounds_max[0] = n.aabbMax.x; g.bounds_max[1] = n.aabbMax.y; g.bounds_max[2] = n.aabbMax.z;
-		g.count = n.triCount;
-	}
-
 	// ---- Upload triangle buffer ----
 	{
+		uint32_t byte_size = scene_data.triangle_count * sizeof(GPUTrianglePacked);
 		PackedByteArray data;
-		uint32_t byte_size = tri_count * sizeof(GPUTrianglePacked);
 		data.resize(byte_size);
-		memcpy(data.ptrw(), gpu_tris.data(), byte_size);
+		memcpy(data.ptrw(), scene_data.triangles, byte_size);
 		shared_triangle_buffer_ = rd_->storage_buffer_create(byte_size, data);
 	}
 
 	// ---- Upload BVH node buffer ----
 	{
+		uint32_t byte_size = scene_data.bvh_node_count * sizeof(GPUBVHNodePacked);
 		PackedByteArray data;
-		uint32_t byte_size = node_count * sizeof(GPUBVHNodePacked);
 		data.resize(byte_size);
-		memcpy(data.ptrw(), gpu_nodes.data(), byte_size);
+		memcpy(data.ptrw(), scene_data.bvh_nodes, byte_size);
 		shared_bvh_node_buffer_ = rd_->storage_buffer_create(byte_size, data);
 	}
 
-	uploaded_tri_count_ = tri_count;
-	uploaded_node_count_ = node_count;
+	uploaded_tri_count_ = scene_data.triangle_count;
+	uploaded_node_count_ = scene_data.bvh_node_count;
 	scene_uploaded_ = true;
 	RT_ASSERT(shared_triangle_buffer_.is_valid(), "Triangle buffer must be valid after upload");
 	RT_ASSERT(shared_bvh_node_buffer_.is_valid(), "BVH node buffer must be valid after upload");
 
 	UtilityFunctions::print("[RTCompositorBase] Uploaded to shared device: ",
-		static_cast<int>(tri_count), " tris, ",
-		static_cast<int>(node_count), " BVH nodes");
+		static_cast<int>(scene_data.triangle_count), " tris, ",
+		static_cast<int>(scene_data.bvh_node_count), " BVH nodes");
 }
 
 // ============================================================================
