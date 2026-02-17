@@ -9,6 +9,10 @@ Before writing ANY code, consult:
 - `CONTRIBUTION_GUIDELINES.md` — full rules with examples
 - `ROADMAP.md` — current phase and priorities
 
+## Starting a New Phase
+
+When beginning a new roadmap phase, **use the form/modal question tool (`ask_questions`)** to gather user input on non-trivial architectural and design decisions before writing code. Phases involve choices (e.g., data layout, API design, algorithm selection, shader architecture) that have long-lasting consequences — do not guess or assume a default. Present the options with brief trade-off descriptions and let the user decide.
+
 ## Rule 1: Godot-Native Principle (MOST IMPORTANT)
 
 **Read from the scene tree. Never maintain parallel state.**
@@ -326,6 +330,39 @@ std::atomic<uint32_t> work_next_chunk_{0};  // Lock-free chunk counter.
                                              // Not a CV predicate — safe without mutex_.
 ```
 
+## Rule 13: Living Documentation (MANDATORY)
+
+**Keep `ROADMAP.md`, `CONTRIBUTION_GUIDELINES.md`, and `.github/copilot-instructions.md` up to date as work progresses.**
+
+These documents are the project's institutional memory. They prevent future contributors (human or AI) from repeating mistakes, violating established patterns, or losing hard-won architectural decisions. Stale documentation is worse than no documentation — it actively misleads.
+
+### When to update:
+- **After completing a roadmap phase or sub-phase** → Mark it ✅, update status text, record actual metrics (perf numbers, file counts, lines of code)
+- **After discovering a new convention or pitfall** → Add it to the guidelines and copilot-instructions so it applies to all future work
+- **After adding new files, modules, or APIs** → Update the directory tree in the roadmap, add the file to relevant "New files" lists
+- **After making an architectural decision** → Document the decision AND the alternatives considered ("WHY NOT X?") in the roadmap
+- **After a bug is found and fixed** → If the root cause reveals a pattern that should be a rule, add it (e.g., TinyBVH Safety, Correctness Over Cleverness — both came from real bugs)
+- **After performance measurements** → Record numbers with hardware, resolution, scene, and date in the roadmap
+
+### What to update:
+| Document | What to keep current |
+|----------|---------------------|
+| `ROADMAP.md` | Phase status (✅/🔧/Future), architecture diagrams, file trees, performance tables, "What We Have Today", Known Deficiencies |
+| `CONTRIBUTION_GUIDELINES.md` | Rules, patterns, anti-patterns, checklists, examples — anything a contributor needs to write correct code |
+| `.github/copilot-instructions.md` | Condensed rules for AI context window — must mirror the guidelines but stay concise |
+
+### Concrete rules:
+- **Never leave a completed phase marked as "Future"** — update the heading, add ✅, write what was actually built
+- **New rules get a number** — append to the existing numbering (Rule 13, Rule 14, ...) in both copilot-instructions and guidelines
+- **Anti-Hallucination Checklist stays in sync** — if you add a new rule, add a corresponding checklist item
+- **Directory trees must match reality** — if you add `gpu_path_tracer.h`, it appears in the roadmap's file tree
+- **Performance tables use real measurements** — no estimates, no "expected" numbers for completed work
+
+### NEVER do this:
+- Complete a phase without updating the roadmap → future AI sessions will try to re-implement it
+- Add a new convention learned from a bug without documenting it → the bug will recur
+- Leave stale "TODO" or "Future" markers on completed work → misleads priority decisions
+
 ## Anti-Hallucination Checklist
 
 Before generating ANY code, ask yourself:
@@ -342,3 +379,4 @@ Before generating ANY code, ask yourself:
 10. Does every mutex, CV, atomic, and owning pointer have an invariant comment? → Add them (Rule 12)
 11. Am I creating a new ThreadPool or IThreadDispatch? → Use `svc->get_thread_dispatch()` instead
 12. Am I accessing RayScene or BVH types from a module? → Use `svc->get_gpu_scene_data()` instead
+13. Did I update the roadmap, guidelines, and copilot-instructions to reflect this work? → Do it (Rule 13)

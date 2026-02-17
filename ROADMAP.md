@@ -22,6 +22,19 @@
 - [PBR & Shading Reference](#pbr--shading-reference)
 - [GPU Shader Reference](#gpu-shader-reference)
 - [Risk Register](#risk-register)
+- [Living Documentation Policy](#living-documentation-policy)
+
+---
+
+## Living Documentation Policy
+
+> **This roadmap, `CONTRIBUTION_GUIDELINES.md`, and `.github/copilot-instructions.md` must be updated as work progresses.**
+
+These three documents are the project's institutional memory. AI assistants read them at the start of every session. If completed work isn't reflected here, the AI will try to re-implement it. If a new convention isn't in the guidelines, the AI won't follow it.
+
+**Update triggers:** completing a phase → mark ✅ + record metrics; adding files → update directory tree; discovering a convention → add a numbered rule; fixing a bug with a generalizable cause → promote to a rule; measuring performance → record with hardware/resolution/scene/date.
+
+See `CONTRIBUTION_GUIDELINES.md` §Living Documentation and `.github/copilot-instructions.md` Rule 13 for the full policy.
 
 ---
 
@@ -194,27 +207,27 @@ mindmap
       ~~No shadows wired to shading~~ ✅
       No emissive surfaces
     Ray Tracing
-      Primary rays only
-      No recursive bounces
-      No GI / indirect illumination
+      ~~Primary rays only~~ ✅ CPU path tracer
+      ~~No recursive bounces~~ ✅ CPU iterative bounces
+      ~~No GI / indirect illumination~~ ✅ CPU path tracing
       No transmission / refraction
       No DOF rays
     Anti-Aliasing
-      No AA — 1 sample, pixel center only
-      No jittered sub-pixel sampling
-      No temporal supersampling
+      ~~No AA — 1 sample, pixel center only~~ ✅
+      ~~No jittered sub-pixel sampling~~ ✅
+      ~~No temporal supersampling~~ ✅
     BVH Performance
-      BVH2 only — no BVH4, BVH8, CWBVH
-      Custom builder — not competitive with TinyBVH
-      TLAS uses proxy triangles hack
+      ~~BVH2 only — no BVH4, BVH8, CWBVH~~ ✅ TinyBVH
+      ~~Custom builder — not competitive with TinyBVH~~ ✅
+      ~~TLAS uses proxy triangles hack~~ ✅ proper TLAS
       No BVH refit for dynamic scenes
     Texture System
-      Image::get_pixel sampling — very slow
+      ~~Image::get_pixel sampling — very slow~~ ✅ CPU texture sampler
       No GPU-side texture arrays
       No mip-mapping
     Architecture
-      Local RD requires separate BVH upload
-      No wavefront path tracing kernels
+      ~~Local RD requires separate BVH upload~~ ✅ shared RD
+      ~~No wavefront path tracing kernels~~ 🔧 built, integration pending
       No persistent GPU state across frames
 ```
 
@@ -395,7 +408,7 @@ TinyBVH's CWBVH traversal (`traverse_cwbvh.cl`) uses:
 > **Goal**: Go from single-ray primary visibility to recursive path tracing
 > with proper light transport.
 >
-> **Status**: CPU iterative path tracer implemented (Phase 3.1).
+> **Status**: CPU iterative path tracer implemented (Phase 3.1). GPU wavefront path tracer skeleton built (Phase 3.2 🔧).
 
 #### Phase 3.1 — CPU Iterative Path Tracing ✅
 
@@ -436,7 +449,32 @@ same interface, letting `RayRenderer` switch backends transparently at runtime.
 - `max_bounces` (int, 0–32, default 4)
 - `path_tracing_enabled` (bool, default true)
 
-#### Phase 3.2 — GPU Wavefront Path Tracing (Future)
+#### Phase 3.2 — GPU Wavefront Path Tracing 🔧
+
+Implemented as a wavefront 4-kernel-per-bounce architecture on the local `RenderingDevice`.
+Shares the existing GPU device and CWBVH scene buffers from `GPURayCaster` via new
+`get_gpu_device()` / `get_gpu_scene_buffer_rids()` API surface on `IRayService`.
+
+**Architecture decisions:**
+- **Texture2DArray** for material textures (not bindless) — widest Vulkan 1.0 compatibility.
+- **Share the local RD** from `GPURayCaster` — avoids double VRAM, single BVH upload.
+- **All lights up to MAX_SCENE_LIGHTS (16)** — stochastic single-light NEE per pixel, unbiased via `light_count` scaling.
+- **Top-down build** — full class skeleton, shaders, descriptor sets, and dispatch logic in one pass.
+
+**Kernels (4 per bounce):**
+1. **Generate** (`pt_generate.comp.glsl`) — camera rays + path state init, PCG32 RNG.
+2. **Extend** — reuses `cwbvh_traverse.comp.glsl` with `RAY_MODE=0` (nearest-hit).
+3. **Shade** (`pt_shade.comp.glsl`) — Cook-Torrance PBR, stochastic NEE, Russian roulette, bounce sampling, tone mapping, finalize mode.
+4. **Connect** — reuses `cwbvh_traverse.comp.glsl` with `RAY_MODE=1` (any-hit).
+
+**New files:**
+- `src/modules/graphics/gpu_path_tracer.h` — `GPUPathTracer` class (implements `IPathTracer`)
+- `src/modules/graphics/gpu_path_tracer.cpp` — full implementation (~860 lines)
+- `src/api/gpu_context.h` — `GPUSceneBufferRIDs` struct for sharing RD resources
+- `src/gpu/shaders/pt_generate.comp.glsl` — primary ray generation shader
+- `src/gpu/shaders/pt_shade.comp.glsl` — shade kernel (~500 lines)
+
+**Status:** Compiles and lints clean. Runtime integration pending (wiring into `RayRenderer` backend selection).
 
 ```mermaid
 graph LR
@@ -879,6 +917,9 @@ src/
 │   ├── gpu_structs.h            # GPU-side struct definitions
 │   └── shaders/
 │       ├── bvh_traverse.comp.glsl     # BVH traversal kernel (314 lines)
+│       ├── cwbvh_traverse.comp.glsl   # CWBVH traversal (nearest + any-hit)
+│       ├── pt_generate.comp.glsl      # Path tracer: primary ray generation
+│       ├── pt_shade.comp.glsl         # Path tracer: shade kernel (~500 lines)
 │       ├── rt_reflections.comp.glsl   # Reflection trace kernel
 │       ├── rt_denoise_spatial.comp.glsl
 │       ├── rt_denoise_temporal.comp.glsl
@@ -888,6 +929,7 @@ src/
 │   ├── rt_reflection_effect.h/.cpp    # RT reflections (4-pass)
 │   ├── ray_renderer.h/.cpp            # CPU debug renderer (11 AOVs)
 │   ├── cpu_path_tracer.h              # CPU multi-bounce path tracer (IPathTracer impl)
+│   ├── gpu_path_tracer.h/.cpp         # GPU wavefront path tracer (IPathTracer impl, ~860 lines)
 │   ├── ray_image.h/.cpp               # Float pixel buffer
 │   ├── ray_camera.h                   # Camera ray generation
 │   ├── shade_pass.h                   # Per-pixel shading functions
@@ -904,8 +946,9 @@ src/
 ├── api/
 │   ├── ray_service.h            # IRayService interface
 │   ├── ray_query.h              # Ray query types
-│   ├── path_tracer.h            # IPathTracer interface + PathTraceParams
-│   ├── gpu_types.h              # GPU-compatible structs (GPUTrianglePacked, GPUBVHNodePacked, GPUSceneUpload)
+│   ├── path_tracer.h            # IPathTracer interface + PathTraceParams + CameraParams
+│   ├── gpu_types.h              # GPU-compatible structs (GPUTrianglePacked, GPUBVHNodePacked, GPUSceneUpload, GPUMaterialPacked, GPULightPacked, GPUPathStatePacked, etc.)
+│   ├── gpu_context.h            # GPUSceneBufferRIDs — shared RD resource handles
 │   ├── thread_dispatch.h        # IThreadDispatch interface
 │   ├── light_data.h             # LightData + SceneLightData
 │   └── scene_shade_data.h       # Shade data view struct

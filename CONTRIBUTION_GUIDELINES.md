@@ -21,8 +21,9 @@
 12. [Document Invariants](#document-invariants)
 13. [Error Handling](#error-handling)
 14. [Design Documentation](#design-documentation)
-15. [Demo Scene Convention](#demo-scene-convention)
-16. [Build & Test](#build--test)
+15. [Living Documentation](#living-documentation)
+16. [Demo Scene Convention](#demo-scene-convention)
+17. [Build & Test](#build--test)
 
 ---
 
@@ -840,6 +841,74 @@ clang-format -i src/**/*.h src/**/*.cpp
 
 ---
 
+## Living Documentation
+
+> **Keep `ROADMAP.md`, `CONTRIBUTION_GUIDELINES.md`, and `.github/copilot-instructions.md` up to date as work progresses.**
+
+These three documents are the project's institutional memory. They prevent future contributors (human or AI) from repeating mistakes, violating established patterns, or losing hard-won architectural decisions. Stale documentation is worse than no documentation — it actively misleads.
+
+### Why This Matters
+
+- **AI assistants start fresh each session.** Copilot reads these files at the beginning of every conversation. If your completed work isn't reflected in the roadmap, the AI will try to re-implement it. If a new convention isn't in the guidelines, the AI won't follow it.
+- **Human contributors skim before diving in.** Accurate phase status and convention lists save hours of "wait, is this already done?" questions.
+- **Rules come from bugs.** TinyBVH Safety (Rule 10), Correctness Over Cleverness (Rule 11), and Document Invariants (Rule 12) all came from real bugs. If we hadn't documented them, those bugs would have recurred.
+
+### When to Update
+
+| Trigger | What to update | Where |
+|---------|---------------|-------|
+| Completed a roadmap phase or sub-phase | Mark ✅, update status text, record actual metrics (perf numbers, file counts) | `ROADMAP.md` |
+| Discovered a new convention or pitfall | Add it with a rule number and examples | `CONTRIBUTION_GUIDELINES.md` + `.github/copilot-instructions.md` |
+| Added new files, modules, or APIs | Update directory trees, "New files" lists | `ROADMAP.md` |
+| Made an architectural decision | Document the decision AND rejected alternatives ("WHY NOT X?") | `ROADMAP.md` |
+| Found and fixed a bug with a generalizable root cause | Promote the fix to a project rule | `CONTRIBUTION_GUIDELINES.md` + `.github/copilot-instructions.md` |
+| Measured performance | Record numbers with hardware, resolution, scene, date | `ROADMAP.md` |
+
+### What Lives Where
+
+| Document | Purpose | Audience |
+|----------|---------|----------|
+| `ROADMAP.md` | Phase status (✅/🔧/Future), architecture diagrams, file trees, performance tables, "What We Have Today", Known Deficiencies | Everyone |
+| `CONTRIBUTION_GUIDELINES.md` | Full rules with examples, anti-patterns, checklists, WHY sections | Human contributors, AI for deep reference |
+| `.github/copilot-instructions.md` | Condensed rules for AI context window — must mirror the guidelines but stay concise | AI assistants (auto-included in every chat) |
+
+### Concrete Rules
+
+1. **Never leave a completed phase marked as "Future"** — update the heading, add ✅, write what was actually built.
+2. **New rules get a number** — append to the existing numbering (Rule 13, Rule 14, ...) in both copilot-instructions and guidelines.
+3. **Anti-Hallucination Checklist stays in sync** — if you add a new rule, add a corresponding checklist item in `.github/copilot-instructions.md`.
+4. **Directory trees must match reality** — if you add `gpu_path_tracer.h`, it appears in the roadmap's file tree.
+5. **Performance tables use real measurements** — no estimates, no "expected" numbers for completed work.
+6. **The three documents must agree** — a rule in the guidelines must have a condensed version in copilot-instructions and (if phase-relevant) a mention in the roadmap.
+
+### Anti-Patterns
+
+```
+❌ Complete a phase without updating the roadmap
+   → future AI sessions will try to re-implement it
+
+❌ Add a convention learned from a bug without documenting it
+   → the bug will recur in the next PR
+
+❌ Leave stale "TODO" or "Future" markers on completed work
+   → misleads priority decisions and wastes effort
+
+❌ Update guidelines but not copilot-instructions (or vice versa)
+   → AI sees one version, human sees another — drift causes inconsistency
+```
+
+### Checklist
+
+Before declaring any task complete:
+
+- [ ] Does the roadmap reflect the current state of this phase?
+- [ ] Are any new files listed in the roadmap's directory tree?
+- [ ] Did this work reveal a new convention or pitfall? If so, is it in the guidelines?
+- [ ] Is the copilot-instructions file in sync with the guidelines?
+- [ ] Are performance numbers recorded (if applicable)?
+
+---
+
 ## Demo Scene Convention
 
 > **Every feature gets a focused demo scene. Demo scenes use imported assets, the modular UI system, and a consistent structure.**
@@ -1022,3 +1091,4 @@ Before submitting code (or before an AI considers a change complete):
 - [ ] Design decisions document "WHY NOT X?"
 - [ ] No exceptions — assertions + return values only
 - [ ] Numbers and measurements cited where relevant
+- [ ] **Living Documentation**: Roadmap, guidelines, and copilot-instructions updated to reflect this work (see [Living Documentation](#living-documentation))

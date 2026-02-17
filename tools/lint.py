@@ -12,6 +12,8 @@ off-the-shelf tool can check:
   module/          Module dependency boundary enforcement
   naming/          PascalCase classes, snake_case functions, etc.
   godot-native/    Godot-Native Principle enforcement ★
+  no-exceptions/   No throw/try/catch or exception headers (Rule 7)
+  tinybvh/         TinyBVH safety: no value-type vectors (Rule 10)
 
   ★ The godot-native/ family is unique to this project.  It prevents
     "parallel state" — C++ members or GDScript properties that duplicate
@@ -322,6 +324,7 @@ _FORBIDDEN_INCLUDES = {
         re.compile(r'#include\s*"raytracer_server\.h"'),
         re.compile(r'#include\s*"dispatch/thread_pool\.h"'),
         re.compile(r'#include\s*"accel/'),
+        re.compile(r'#include\s*"gpu/gpu_structs\.h"'),
     ]
 }
 
@@ -540,6 +543,103 @@ def check_godot_native_cpp(path: str, lines: list[str]) -> list[Violation]:
     return violations
 
 
+# ──────────────────────────────────────────────────────────────
+#  no-exceptions/  — No exceptions (Rule 7)
+# ──────────────────────────────────────────────────────────────
+
+# Matches throw keyword (not "throw;" in comments, but actual throw statements).
+_THROW_RE = re.compile(r"\bthrow\b")
+_TRY_RE = re.compile(r"\btry\s*\{")
+_CATCH_RE = re.compile(r"\bcatch\s*\(")
+
+# Exception-related standard library headers.
+_EXCEPTION_HEADERS = {
+    "<exception>", "<stdexcept>", "<system_error>",
+}
+
+
+def check_no_exceptions_throw(path: str, lines: list[str]) -> list[Violation]:
+    """no-exceptions/throw — No throw, try, or catch keywords."""
+    if not (path.endswith(".h") or path.endswith(".cpp")):
+        return []
+    violations = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        # Skip comments.
+        if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+            continue
+        if _THROW_RE.search(line):
+            violations.append(Violation(
+                path, i + 1, "no-exceptions/throw",
+                "'throw' is forbidden — use assertions + return values (Rule 7)"
+            ))
+        if _TRY_RE.search(line):
+            violations.append(Violation(
+                path, i + 1, "no-exceptions/throw",
+                "'try' block is forbidden — use assertions + return values (Rule 7)"
+            ))
+        if _CATCH_RE.search(line):
+            violations.append(Violation(
+                path, i + 1, "no-exceptions/throw",
+                "'catch' block is forbidden — use assertions + return values (Rule 7)"
+            ))
+    return violations
+
+
+def check_no_exceptions_include(path: str, lines: list[str]) -> list[Violation]:
+    """no-exceptions/include — No #include <exception>/<stdexcept>."""
+    if not (path.endswith(".h") or path.endswith(".cpp")):
+        return []
+    violations = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#include"):
+            continue
+        for header in _EXCEPTION_HEADERS:
+            if header in line:
+                violations.append(Violation(
+                    path, i + 1, "no-exceptions/include",
+                    f"Exception header '{header}' is forbidden (Rule 7)"
+                ))
+    return violations
+
+
+# ──────────────────────────────────────────────────────────────
+#  tinybvh/  — TinyBVH safety (Rule 10)
+# ──────────────────────────────────────────────────────────────
+
+# Types that contain TinyBVH members and must never be stored by value in vectors.
+_TINYBVH_OWNING_TYPES = {"MeshBLAS", "RayScene", "SceneTLAS"}
+
+# Pattern: std::vector<TypeName> (without unique_ptr wrapper).
+# Matches std::vector<MeshBLAS>, vector<RayScene>, etc.
+_VECTOR_VALUE_RE = re.compile(
+    r"\bstd::vector\s*<\s*(?!std::unique_ptr)("
+    + "|".join(_TINYBVH_OWNING_TYPES)
+    + r")\s*>"
+)
+
+
+def check_tinybvh_no_vector_value(path: str, lines: list[str]) -> list[Violation]:
+    """tinybvh/no-vector-value — TinyBVH-containing types must use unique_ptr in vectors."""
+    if not (path.endswith(".h") or path.endswith(".cpp")):
+        return []
+    violations = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+            continue
+        m = _VECTOR_VALUE_RE.search(line)
+        if m:
+            type_name = m.group(1)
+            violations.append(Violation(
+                path, i + 1, "tinybvh/no-vector-value",
+                f"std::vector<{type_name}> is forbidden — {type_name} contains TinyBVH types. "
+                f"Use std::vector<std::unique_ptr<{type_name}>> instead (Rule 10)"
+            ))
+    return violations
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  RULE REGISTRY
 # ══════════════════════════════════════════════════════════════════════
@@ -564,6 +664,13 @@ RULE_CHECKS: dict[str, list] = {
     ],
     "godot-native": [
         check_godot_native_cpp,
+    ],
+    "no-exceptions": [
+        check_no_exceptions_throw,
+        check_no_exceptions_include,
+    ],
+    "tinybvh": [
+        check_tinybvh_no_vector_value,
     ],
 }
 
@@ -717,6 +824,8 @@ def main() -> int:
               module/        Module dependency boundary
               naming/        PascalCase classes, snake_case functions
               godot-native/  Godot-Native Principle enforcement
+              no-exceptions/ No throw/try/catch or exception headers
+              tinybvh/       TinyBVH safety: no value-type vectors
 
             SUPPRESSION
               Inline:  // rt-lint: suppress <rule>
